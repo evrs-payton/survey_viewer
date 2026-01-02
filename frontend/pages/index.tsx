@@ -23,9 +23,12 @@ export default function IndexPage() {
           <h1>Band Directory</h1>
           <p className="muted">Select a band to review composite traces, analyze waterfalls, and annotate notable activity.</p>
         </div>
-        <div className="controls">
+        <div className="controls" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <Link href="/feature" className="button">
-            Open Feature (MinIO)
+            Legacy
+          </Link>
+          <Link href="/surveys" className="button">
+            RF Proc
           </Link>
         </div>
       </header>

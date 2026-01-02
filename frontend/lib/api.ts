@@ -408,3 +408,84 @@ export async function listBandsBySiteMonth(site: string, year: string, month: st
   const query = new URLSearchParams({ site, year, month });
   return fetchJSON<BronzeBandsBySiteMonthResponse>(`/bronze/bands-by-site-month?${query.toString()}`);
 }
+
+// DataSource API interfaces and functions
+export interface SurveyInfo {
+  survey_id: string;
+  site?: string;
+  month?: string;
+  mission_type?: string;
+  sensor?: string;
+  run_id?: string;
+}
+
+export interface SurveyBandInfo {
+  band_id: string;
+  band_index?: number;
+  band_label?: string;
+  survey_id: string;
+  axis?: {
+    start_hz?: number;
+    step_hz?: number;
+    n_freqs?: number;
+    stop_hz?: number;
+  };
+}
+
+export interface SurveyHoldsResponse {
+  freqs: number[];
+  max_hold: number[];
+  min_hold: number[];
+  avg_hold: number[];
+  metadata: {
+    band_id: string;
+    band_label?: string | null;
+    n_traces?: number | null;
+    start_hz?: number | null;
+    stop_hz?: number | null;
+    step_hz?: number | null;
+    n_freqs?: number;
+    mission_type?: string;
+    site?: string;
+    sensor?: string;
+    run_ids?: string[];
+    band_index?: number;
+    unix_time_min?: number | null;
+    unix_time_max?: number | null;
+    days?: string[];
+    [key: string]: unknown;
+  };
+  source_mode: 'legacy' | 'rfproc';
+}
+
+export interface DataSourceModeResponse {
+  mode: 'legacy' | 'rfproc';
+}
+
+export async function getDataSourceMode(): Promise<DataSourceModeResponse> {
+  return fetchJSON<DataSourceModeResponse>('/bands/mode');
+}
+
+export async function listSurveys(): Promise<SurveyInfo[]> {
+  return fetchJSON<SurveyInfo[]>('/bands/surveys');
+}
+
+export async function listSurveyBands(surveyId: string): Promise<SurveyBandInfo[]> {
+  const encodedSurveyId = encodeURIComponent(surveyId);
+  return fetchJSON<SurveyBandInfo[]>(`/bands/survey/${encodedSurveyId}/bands`);
+}
+
+export async function getSurveyHolds(
+  surveyId: string,
+  bandId: string,
+  maxPoints?: number
+): Promise<SurveyHoldsResponse> {
+  const encodedSurveyId = encodeURIComponent(surveyId);
+  const encodedBandId = encodeURIComponent(bandId);
+  const query = new URLSearchParams();
+  if (maxPoints !== undefined) {
+    query.set('max_points', maxPoints.toString());
+  }
+  const queryString = query.toString() ? `?${query.toString()}` : '';
+  return fetchJSON<SurveyHoldsResponse>(`/bands/survey/${encodedSurveyId}/band/${encodedBandId}/holds${queryString}`);
+}

@@ -268,7 +268,7 @@ class RfprocGoldSilverDataSource(DataSource):
             "mission_type": mission_type,
             "site": site,
             "sensor": sensor,
-            "run_id": run_id,
+            "run_ids": [run_id],
         }
 
         return {

@@ -120,6 +120,18 @@ def get_waterfall_tile(
 
 
 # New routes using DataSource adapter system
+@router.get("/mode")
+def get_data_source_mode() -> Dict:
+    """Get the current data source mode.
+
+    Returns:
+        Dictionary with 'mode' field: "legacy" or "rfproc"
+    """
+    import os
+    mode = os.getenv("DATA_SOURCE_MODE", "legacy")
+    return {"mode": mode}
+
+
 @router.get("/surveys")
 def list_surveys() -> List[Dict]:
     """List available surveys using DataSource adapter.
