@@ -1,21 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 
-import { listSurveys, listSurveyBands, getDataSourceMode, type SurveyInfo, type SurveyBandInfo } from '../lib/api';
+import { listSurveys, listSurveyBands, type SurveyInfo, type SurveyBandInfo } from '../lib/api';
 
 type Status = 'idle' | 'loading' | 'error' | 'ready';
 
 function formatSurveyId(surveyId: string): string {
-  if (surveyId.startsWith('legacy:')) {
-    const parts = surveyId.substring(7).split(':');
-    if (parts.length === 2) {
-      return `Site: ${parts[0]}, Month: ${parts[1]}`;
-    }
-  } else if (surveyId.startsWith('rfproc:')) {
-    const parts = surveyId.substring(7).split(':');
-    if (parts.length === 4) {
-      return `Mission: ${parts[0]}, Site: ${parts[1]}, Sensor: ${parts[2]}, Run: ${parts[3]}`;
-    }
+  const parts = surveyId.split(':');
+  if (parts.length === 4) {
+    return `Mission: ${parts[0]}, Site: ${parts[1]}, Sensor: ${parts[2]}, Run: ${parts[3]}`;
   }
   return surveyId;
 }
@@ -26,20 +19,7 @@ export default function SurveysPage() {
   const [bands, setBands] = useState<SurveyBandInfo[]>([]);
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [backendMode, setBackendMode] = useState<'legacy' | 'rfproc' | null>(null);
   const [bandsError, setBandsError] = useState<string | null>(null);
-
-  // Load backend mode on mount
-  useEffect(() => {
-    getDataSourceMode()
-      .then((response) => {
-        setBackendMode(response.mode);
-      })
-      .catch((err) => {
-        console.error('Failed to load backend mode', err);
-        // Don't show error for mode, just log it
-      });
-  }, []);
 
   // Load surveys on mount
   useEffect(() => {
@@ -104,12 +84,7 @@ export default function SurveysPage() {
         <div>
           <p className="eyebrow">RF Spectrum Explorer</p>
           <h1>Surveys</h1>
-          <p className="muted">Browse surveys and bands using the DataSource adapter.</p>
-          {backendMode && (
-            <p style={{ marginTop: '0.5rem', fontSize: '0.9em', color: '#888' }}>
-              Backend Mode: <strong style={{ color: '#fff' }}>{backendMode.toUpperCase()}</strong>
-            </p>
-          )}
+          <p className="muted">Browse surveys and bands from rfproc data.</p>
         </div>
         <div className="controls">
           <Link href="/" className="button">

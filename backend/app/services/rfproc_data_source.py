@@ -1,4 +1,4 @@
-"""rfproc gold/silver data source adapter.
+"""rfproc gold/silver data source.
 
 Reads new rfproc gold products from MinIO using run manifests as discovery index.
 """
@@ -12,10 +12,33 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .data_source import DataSource
 from .duck import get_connection
-from .legacy_data_source import _downsample_arrays
 from .minio_client import bucket_name, get_minio_client
+
+
+def _downsample_arrays(arrays: Dict[str, np.ndarray], max_points: Optional[int]) -> Dict[str, np.ndarray]:
+    """Downsample arrays if n_freqs > max_points by taking every k-th point.
+    
+    Args:
+        arrays: Dictionary with array keys (freqs, max_hold, min_hold, avg_hold)
+        max_points: Optional maximum number of points (if None, return arrays unchanged)
+    
+    Returns:
+        Dictionary with downsampled arrays (or original arrays if no downsampling needed)
+    """
+    if max_points is None:
+        return arrays
+    
+    # Get array length from freqs (assume all arrays have same length)
+    n_freqs = len(arrays["freqs"])
+    if n_freqs <= max_points:
+        return arrays
+    
+    # Compute decimation factor: take every k-th point
+    k = math.ceil(n_freqs / max_points)
+    
+    # Decimate all arrays uniformly
+    return {key: arr[::k] for key, arr in arrays.items()}
 
 
 def _read_manifest(minio_client, bucket: str, manifest_path: str) -> Optional[Dict]:
@@ -42,11 +65,11 @@ def _read_manifest(minio_client, bucket: str, manifest_path: str) -> Optional[Di
         return None
 
 
-class RfprocGoldSilverDataSource(DataSource):
-    """Data source adapter for rfproc gold/silver products.
+class RfprocGoldSilverDataSource:
+    """Data source for rfproc gold/silver products.
 
     Reads from: gold/mission_type={mission_type}/site={site}/sensor={sensor}/run_id={run_id}/band_id={band_id}/product=holds/
-    Survey ID format: rfproc:{mission_type}:{site}:{sensor}:{run_id}
+    Survey ID format: {mission_type}:{site}:{sensor}:{run_id}
     Uses run manifests as discovery index (runs/.../run_manifest.json)
     """
 
@@ -57,7 +80,7 @@ class RfprocGoldSilverDataSource(DataSource):
             filters: Optional filter dictionary (currently unused)
 
         Returns:
-            List of survey dictionaries with 'survey_id' in format 'rfproc:{mission_type}:{site}:{sensor}:{run_id}'
+            List of survey dictionaries with 'survey_id' in format '{mission_type}:{site}:{sensor}:{run_id}'
         """
         client = get_minio_client()
         bucket = bucket_name()
@@ -84,9 +107,7 @@ class RfprocGoldSilverDataSource(DataSource):
             if not all([mission_type, site, sensor, run_id]):
                 continue
 
-            # Optionally check run manifest status (for efficiency, we could skip this and filter in list_bands)
-            # For now, include all run manifests; filtering by status can happen in list_bands
-            survey_id = f"rfproc:{mission_type}:{site}:{sensor}:{run_id}"
+            survey_id = f"{mission_type}:{site}:{sensor}:{run_id}"
             if survey_id not in surveys:
                 surveys[survey_id] = {
                     "survey_id": survey_id,
@@ -102,17 +123,15 @@ class RfprocGoldSilverDataSource(DataSource):
         """List bands for a survey by reading run manifest.
 
         Args:
-            survey_id: Survey identifier in format 'rfproc:{mission_type}:{site}:{sensor}:{run_id}'
+            survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
 
         Returns:
             List of band dictionaries with band identifiers and metadata
         """
         # Parse survey_id
-        if not survey_id.startswith("rfproc:"):
-            raise ValueError(f"Invalid rfproc survey_id format: {survey_id}")
-        parts = survey_id[7:].split(":")  # Remove 'rfproc:' prefix
+        parts = survey_id.split(":")
         if len(parts) != 4:
-            raise ValueError(f"Invalid rfproc survey_id format: {survey_id}")
+            raise ValueError(f"Invalid survey_id format: {survey_id} (expected 'mission_type:site:sensor:run_id')")
         mission_type, site, sensor, run_id = parts
 
         # Construct run manifest path
@@ -165,7 +184,7 @@ class RfprocGoldSilverDataSource(DataSource):
         """Get normalized holds data for frontend.
 
         Args:
-            survey_id: Survey identifier in format 'rfproc:{mission_type}:{site}:{sensor}:{run_id}'
+            survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
             band_id: Band identifier (band_id string from run manifest)
             product_type: Product type (default: "holds")
             max_points: Optional maximum number of points (downsample if n_freqs > max_points)
@@ -182,11 +201,9 @@ class RfprocGoldSilverDataSource(DataSource):
             }
         """
         # Parse survey_id
-        if not survey_id.startswith("rfproc:"):
-            raise ValueError(f"Invalid rfproc survey_id format: {survey_id}")
-        parts = survey_id[7:].split(":")
+        parts = survey_id.split(":")
         if len(parts) != 4:
-            raise ValueError(f"Invalid rfproc survey_id format: {survey_id}")
+            raise ValueError(f"Invalid survey_id format: {survey_id} (expected 'mission_type:site:sensor:run_id')")
         mission_type, site, sensor, run_id = parts
 
         # Construct gold manifest path deterministically
@@ -277,6 +294,5 @@ class RfprocGoldSilverDataSource(DataSource):
             "min_hold": arrays["min_hold"].tolist(),
             "avg_hold": arrays["avg_hold"].tolist(),
             "metadata": metadata,
-            "source_mode": "rfproc",
         }
 

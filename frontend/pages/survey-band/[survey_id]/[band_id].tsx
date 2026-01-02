@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
-import { getSurveyHolds, type SurveyHoldsResponse } from '../../../../lib/api';
+import { getSurveyHolds, type SurveyHoldsResponse } from '../../../lib/api';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -17,16 +17,9 @@ function formatFrequency(hz: number): string {
 }
 
 function formatSurveyId(surveyId: string): string {
-  if (surveyId.startsWith('legacy:')) {
-    const parts = surveyId.substring(7).split(':');
-    if (parts.length === 2) {
-      return `Site: ${parts[0]}, Month: ${parts[1]}`;
-    }
-  } else if (surveyId.startsWith('rfproc:')) {
-    const parts = surveyId.substring(7).split(':');
-    if (parts.length === 4) {
-      return `Mission: ${parts[0]}, Site: ${parts[1]}, Sensor: ${parts[2]}, Run: ${parts[3]}`;
-    }
+  const parts = surveyId.split(':');
+  if (parts.length === 4) {
+    return `Mission: ${parts[0]}, Site: ${parts[1]}, Sensor: ${parts[2]}, Run: ${parts[3]}`;
   }
   return surveyId;
 }
@@ -210,7 +203,7 @@ export default function SurveyBandDetailPage() {
             {startHz !== null && stopHz !== null && (
               <>
                 <br />
-                Frequency: {formatFrequency(startHz)} - {formatFrequency(stopHz)} | Traces: {nTraces ?? 'N/A'} | Source: {holdsData.source_mode}
+                Frequency: {formatFrequency(startHz)} - {formatFrequency(stopHz)} | Traces: {nTraces ?? 'N/A'}
               </>
             )}
           </p>
@@ -271,8 +264,6 @@ export default function SurveyBandDetailPage() {
               <dd>{metadata.n_freqs.toLocaleString()}</dd>
             </>
           )}
-          <dt style={{ fontWeight: 'bold' }}>Source Mode:</dt>
-          <dd>{holdsData.source_mode}</dd>
           {metadata.site && (
             <>
               <dt style={{ fontWeight: 'bold' }}>Site:</dt>

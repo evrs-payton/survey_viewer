@@ -4,8 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import assignments, bands, bronze, feature, markers, peaks
-from .ws import router as ws_router
+from .routers import bands
 
 
 def create_app() -> FastAPI:
@@ -30,12 +29,6 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(bands.router)
-    app.include_router(feature.router)
-    app.include_router(bronze.router)
-    app.include_router(peaks.router)
-    app.include_router(markers.router)
-    app.include_router(assignments.router)
-    app.include_router(ws_router)
 
     return app
 
