@@ -208,6 +208,50 @@ Environment variables (backend):
 - `MINIO_USE_SSL` (`true`/`false`)
 - Optional `MINIO_REGION`
 
+## Data Source Modes
+
+The viewer supports two data source modes for reading gold holds data:
+
+- **Legacy mode** (default): Reads legacy gold parquet files from `gold/survey/{site}/{month}/`
+- **rfproc mode**: Reads new rfproc gold products from `gold/mission_type=*/site=*/sensor=*/run_id=*/band_id=*/product=holds/`
+
+Set `DATA_SOURCE_MODE=legacy|rfproc` environment variable to switch modes (default: `legacy`).
+
+### MinIO Configuration
+
+Both modes require MinIO access with the same environment variables:
+- `MINIO_ENDPOINT`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET` (default: `rf-lake`)
+- `MINIO_USE_SSL` (default: `false`)
+
+### Example Run Commands
+
+**Legacy mode**:
+```bash
+DATA_SOURCE_MODE=legacy uvicorn app.main:app --app-dir backend/app
+```
+
+**rfproc mode**:
+```bash
+DATA_SOURCE_MODE=rfproc uvicorn app.main:app --app-dir backend/app
+```
+
+### New DataSource Endpoints
+
+The backend provides new endpoints that work with both data source modes:
+
+- `GET /bands/surveys` - List available surveys (format depends on mode)
+- `GET /bands/survey/{survey_id}/bands` - List bands for a survey
+- `GET /bands/survey/{survey_id}/band/{band_id}/holds` - Get normalized holds data
+
+Survey ID formats:
+- Legacy: `legacy:{site}:{yyyy-mm}` (e.g., `legacy:Lask:2025-01`)
+- rfproc: `rfproc:{mission_type}:{site}:{sensor}:{run_id}` (e.g., `rfproc:survey:Lask:CRFS:run01`)
+
+The `/bands/survey/{survey_id}/band/{band_id}/holds` endpoint supports an optional `max_points` query parameter (recommended: 50000) to downsample large arrays for better performance.
+
 New endpoints:
 - `GET /feature?location=<loc>&month=YYYY-MM` with optional `band_index`, `band_label`, `day`, `run_id`, `limit`.
 - `GET /feature/schema` — schema for the same file.
