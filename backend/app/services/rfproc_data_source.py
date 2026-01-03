@@ -241,7 +241,7 @@ class RfprocGoldSilverDataSource:
         con = get_connection()
         data_path = f"s3://{bucket}/{data_object}"
         try:
-            table = con.execute(f"SELECT * FROM read_parquet('{data_path}')").arrow()
+            table = con.execute(f"SELECT * FROM read_parquet('{data_path}')").fetch_arrow_table()
         except Exception as e:
             raise ValueError(f"Failed to read gold parquet data: {e}")
 
