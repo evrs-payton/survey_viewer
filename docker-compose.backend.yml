@@ -1,0 +1,50 @@
+version: '3.8'
+
+# Docker Compose file for backend service (standalone deployment)
+# Usage: docker-compose -f docker-compose.backend.yml up -d
+#
+# This file is intended for deployment on a separate machine from the frontend.
+# It pulls the backend image from Docker Hub instead of building locally.
+#
+# Set environment variables via .env file or export before running:
+#   export MINIO_ENDPOINT=10.10.100.28:9000
+#   export MINIO_ACCESS_KEY=your_access_key
+#   export MINIO_SECRET_KEY=your_secret_key
+#   export PGHOST=surveyviewer-postgres
+#   export PGDATABASE=surveyviewer
+#   export PGUSER=surveyviewer
+#   export PGPASSWORD=your_password
+
+services:
+  backend:
+    image: your-registry/survey-viewer-backend:latest
+    # Alternatively, use a specific version tag:
+    # image: your-registry/survey-viewer-backend:v1.0.0
+    environment:
+      - DATA_DIR=/data
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3001}
+      # MinIO Configuration
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET:-rf-lake}
+      - MINIO_USE_SSL=${MINIO_USE_SSL:-false}
+      - MINIO_REGION=${MINIO_REGION:-}
+      # PostgreSQL Configuration (for Assignment Overlays)
+      - PGHOST=${PGHOST:-surveyviewer-postgres}
+      - PGPORT=${PGPORT:-5432}
+      - PGDATABASE=${PGDATABASE:-surveyviewer}
+      - PGUSER=${PGUSER:-surveyviewer}
+      - PGPASSWORD=${PGPASSWORD}
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+

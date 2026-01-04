@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 _pool: Optional[asyncpg.Pool] = None
@@ -37,15 +40,23 @@ async def get_pool() -> asyncpg.Pool:
         user = _required("PGUSER")
         password = _required("PGPASSWORD")
         
-        _pool = await asyncpg.create_pool(
-            host=host,
-            port=port,
-            database=database,
-            user=user,
-            password=password,
-            min_size=1,
-            max_size=10,
-        )
+        try:
+            _pool = await asyncpg.create_pool(
+                host=host,
+                port=port,
+                database=database,
+                user=user,
+                password=password,
+                min_size=1,
+                max_size=10,
+            )
+            logger.info(f"Created PostgreSQL connection pool to {host}:{port}/{database}")
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"PostgreSQL connection error: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to connect to PostgreSQL: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error creating PostgreSQL pool: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to create PostgreSQL connection pool: {str(e)}") from e
     
     return _pool
 

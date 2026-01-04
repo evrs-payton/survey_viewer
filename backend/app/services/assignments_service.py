@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Dict, List, Optional
 
+import asyncpg
+
 from .postgres import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 async def get_overlays(
@@ -62,18 +67,25 @@ async def get_overlays(
     
     query += " ORDER BY freq_start_hz"
     
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-        
-        return [
-            {
-                "assignment_serial": row["assignment_serial"],
-                "freq_start_hz": row["freq_start_hz"],
-                "freq_stop_hz": row["freq_stop_hz"],
-                "center_frequency_hz": row["center_frequency_hz"],
-                "bandwidth_hz": row["bandwidth_hz"],
-                "source_name": row["source_name"],
-            }
-            for row in rows
-        ]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            
+            return [
+                {
+                    "assignment_serial": row["assignment_serial"],
+                    "freq_start_hz": row["freq_start_hz"],
+                    "freq_stop_hz": row["freq_stop_hz"],
+                    "center_frequency_hz": row["center_frequency_hz"],
+                    "bandwidth_hz": row["bandwidth_hz"],
+                    "source_name": row["source_name"],
+                }
+                for row in rows
+            ]
+    except asyncpg.exceptions.PostgresError as e:
+        logger.error(f"PostgreSQL error in get_overlays: {e}", exc_info=True)
+        raise RuntimeError(f"Database query failed: {str(e)}") from e
+    except Exception as e:
+        logger.error(f"Unexpected error in get_overlays: {e}", exc_info=True)
+        raise RuntimeError(f"Unexpected database error: {str(e)}") from e
 

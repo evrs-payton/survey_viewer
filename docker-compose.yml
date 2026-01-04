@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   backend:
     build:
@@ -6,15 +8,26 @@ services:
     environment:
       - DATA_DIR=/data
       - FRONTEND_ORIGIN=http://localhost:3001
-      - MINIO_ENDPOINT=localhost:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_BUCKET=rf-lake
-      - MINIO_USE_SSL=false
+      # MinIO Configuration
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-localhost:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-rf-lake}
+      - MINIO_USE_SSL=${MINIO_USE_SSL:-false}
+      - MINIO_REGION=${MINIO_REGION:-}
+      # PostgreSQL Configuration (for Assignment Overlays)
+      - PGHOST=${PGHOST:-postgres}
+      - PGPORT=${PGPORT:-5432}
+      - PGDATABASE=${PGDATABASE:-surveyviewer}
+      - PGUSER=${PGUSER:-surveyviewer}
+      - PGPASSWORD=${PGPASSWORD:-surveyviewer}
     volumes:
       - ./data:/data:ro
     ports:
       - "8000:8000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
 
   frontend:
     build:
@@ -22,6 +35,7 @@ services:
       dockerfile: frontend/Dockerfile
     environment:
       - NEXT_PUBLIC_API_BASE=http://localhost:8000
+      - NEXT_TELEMETRY_DISABLED=1
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -30,4 +44,26 @@ services:
       - "3001:3000"
     depends_on:
       - backend
-    command: sh -c "npm install && npm run dev -- -H 0.0.0.0"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=${PGDATABASE:-surveyviewer}
+      - POSTGRES_USER=${PGUSER:-surveyviewer}
+      - POSTGRES_PASSWORD=${PGPASSWORD:-surveyviewer}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Optional: mount migration files for easy access
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-surveyviewer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

@@ -1,0 +1,32 @@
+version: '3.8'
+
+# Docker Compose file for frontend service (standalone deployment)
+# Usage: docker-compose -f docker-compose.frontend.yml up -d
+#
+# This file is intended for deployment on a separate machine from the backend.
+# It pulls the frontend image from Docker Hub instead of building locally.
+#
+# Set environment variables via .env file or export before running:
+#   export NEXT_PUBLIC_API_BASE=http://backend-host:8000
+#   (Replace backend-host with the actual backend hostname or IP address)
+
+services:
+  frontend:
+    image: your-registry/survey-viewer-frontend:latest
+    # Alternatively, use a specific version tag:
+    # image: your-registry/survey-viewer-frontend:v1.0.0
+    environment:
+      - NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+      - NEXT_TELEMETRY_DISABLED=1
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+

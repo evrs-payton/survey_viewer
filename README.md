@@ -61,6 +61,10 @@ API utilities are provided in `frontend/lib/api.ts` to communicate with the back
 
 ## Running with Docker Compose
 
+### Local Development (Single Machine)
+
+For local development where both frontend and backend run on the same machine:
+
 1. Set MinIO environment variables (see backend configuration above)
 2. Build and start the services:
 
@@ -68,7 +72,47 @@ API utilities are provided in `frontend/lib/api.ts` to communicate with the back
    docker-compose up --build
    ```
 
-3. Access the frontend at http://localhost:3000 and the backend docs at http://localhost:8000/docs.
+3. Access the frontend at http://localhost:3001 and the backend docs at http://localhost:8000/docs.
+
+### Production Deployment (Separate Machines)
+
+For production deployments where frontend and backend run on separate machines using images from Docker Hub:
+
+**Backend deployment:**
+
+1. Set environment variables (MinIO and PostgreSQL):
+   ```bash
+   export MINIO_ENDPOINT=10.10.100.28:9000
+   export MINIO_ACCESS_KEY=your_access_key
+   export MINIO_SECRET_KEY=your_secret_key
+   export PGHOST=surveyviewer-postgres
+   export PGDATABASE=surveyviewer
+   export PGUSER=surveyviewer
+   export PGPASSWORD=your_password
+   ```
+
+2. Update `docker-compose.backend.yml` with your Docker registry image name
+3. Start the backend service:
+   ```bash
+   docker-compose -f docker-compose.backend.yml up -d
+   ```
+
+**Frontend deployment:**
+
+1. Set the backend API URL:
+   ```bash
+   export NEXT_PUBLIC_API_BASE=http://backend-host:8000
+   ```
+
+2. Update `docker-compose.frontend.yml` with your Docker registry image name
+3. Start the frontend service:
+   ```bash
+   docker-compose -f docker-compose.frontend.yml up -d
+   ```
+
+**Using external PostgreSQL:**
+
+If PostgreSQL runs externally (e.g., on rf-lakehouse), use `docker-compose.external-postgres.yml` instead and set `PGHOST` to the external hostname/IP.
 
 ## Local Development
 

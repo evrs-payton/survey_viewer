@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ..services import assignments_service
+from ..services.assignments_service import get_overlays as get_overlays_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assignments", tags=["assignments"])
 
@@ -66,8 +69,10 @@ async def get_overlay(
         return overlays
     except RuntimeError as e:
         # Database connection or configuration errors
+        logger.error(f"Database error in get_overlay endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         # Unexpected errors
+        logger.error(f"Unexpected error in get_overlay endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
