@@ -26,9 +26,21 @@ def _col_import(content: str) -> List[Dict]:
 
     sfaf1col = StringIO(content)
     parse = False
+    data_dict = {}
+    exclude_n = 1
+    station_class_n = 1
+    transmitter_power_n = 1
+    emission_designator_n = 1
+    erp_n = 1
+    user_net_code_n = 1
+    operating_unit_n = 1
     
     for line in sfaf1col:
         if line.startswith('005'):
+            # Save previous record if one exists
+            if parse and data_dict:
+                list_of_dict.append(data_dict)
+            # Start new record
             data_dict = {}
             exclude_n = 1
             station_class_n = 1
@@ -42,7 +54,8 @@ def _col_import(content: str) -> List[Dict]:
             continue
         elif line.startswith('924'):
             parse = False
-            list_of_dict.append(data_dict)
+            if data_dict:  # Only append if dict has data
+                list_of_dict.append(data_dict)
         elif parse:
             if line.startswith('010'):
                 data_dict['TYPE OF ACTION'] = line.split('.     ')[1].strip()
@@ -103,6 +116,10 @@ def _col_import(content: str) -> List[Dict]:
                 data_dict['MAJOR FUNCTION IDENTIFIER'] = line.split('.     ')[1].strip()
             if line.startswith('512'):
                 data_dict['INTERMEDIATE FUNCTION IDENTIFIER'] = line.split('.     ')[1].strip()
+    
+    # Handle last record if file ends without 924
+    if parse and data_dict:
+        list_of_dict.append(data_dict)
     
     return list_of_dict
 
@@ -208,9 +225,11 @@ def _convert_power(p: str) -> float:
         p: Power string (e.g., "W100", "K5")
         
     Returns:
-        Power as float (Watts)
+        Power as float (Watts), defaults to 0 if empty or invalid
     """
     power = 0
+    if not p or len(p) == 0:
+        return power
     if p[0] == "W":
         power += float(p[1:])
     elif p[0] == "K":
@@ -261,6 +280,10 @@ def parse_sfaf_content(content: str) -> List[Dict]:
         clean_current_dict = {k: v for k, v in current_dict.items() if str(v) != 'nan'}
 
         if 'FREQUENCY' not in clean_current_dict:
+            continue
+        
+        # Skip frequency ranges (unassigned frequencies) - line 110 containing '-' indicates a range
+        if '-' in clean_current_dict['FREQUENCY']:
             continue
             
         converted_frequencies = _convert_frequency(clean_current_dict['FREQUENCY'])

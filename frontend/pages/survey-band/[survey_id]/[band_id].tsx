@@ -38,6 +38,11 @@ export default function SurveyBandDetailPage() {
   const [showOverlays, setShowOverlays] = useState<boolean>(false);
   const [overlays, setOverlays] = useState<AssignmentOverlay[] | null>(null);
   const [overlaysLoading, setOverlaysLoading] = useState<boolean>(false);
+  const [showLabels, setShowLabels] = useState<boolean>(false);
+  const [filterText, setFilterText] = useState<string>('');
+  const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [currentPage, setCurrentPage] = useState<number>(1);
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
@@ -134,26 +139,73 @@ export default function SurveyBandDetailPage() {
     ];
   }, [holdsData]);
 
+  // Filter overlays based on filterText
+  const filteredOverlays = useMemo(() => {
+    if (!overlays) return [];
+    if (!filterText.trim()) return overlays;
+    const lowerFilter = filterText.toLowerCase();
+    return overlays.filter((overlay) =>
+      overlay.assignment_serial.toLowerCase().includes(lowerFilter)
+    );
+  }, [overlays, filterText]);
+
+  // Reset to page 1 when filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterText]);
+
+  // Paginate filtered overlays
+  const paginatedOverlays = useMemo(() => {
+    const startIdx = (currentPage - 1) * pageSize;
+    const endIdx = startIdx + pageSize;
+    return filteredOverlays.slice(startIdx, endIdx);
+  }, [filteredOverlays, currentPage, pageSize]);
+
+  const totalPages = Math.ceil(filteredOverlays.length / pageSize);
+
   const layout = useMemo<Partial<Layout>>(() => {
     const metadata = holdsData?.metadata;
     const bandLabel = metadata?.band_label;
     const bandId = metadata?.band_id || band_id;
 
     // Create overlay shapes if overlays are enabled and available
-    const shapes = showOverlays && overlays && overlays.length > 0
-      ? overlays.map((overlay) => ({
-          type: 'rect' as const,
-          xref: 'x' as const,
-          yref: 'paper' as const,
-          x0: overlay.freq_start_hz / 1e6, // Convert to MHz
-          x1: overlay.freq_stop_hz / 1e6,
-          y0: 0,
-          y1: 1,
-          line: { width: 0 },
-          fillcolor: 'rgba(100, 150, 255, 0.2)',
-          opacity: 0.3,
-        }))
+    const shapes = showOverlays && filteredOverlays && filteredOverlays.length > 0
+      ? filteredOverlays.map((overlay, idx) => {
+          const isHighlighted = highlightedIndex === idx;
+          return {
+            type: 'rect' as const,
+            xref: 'x' as const,
+            yref: 'paper' as const,
+            x0: overlay.freq_start_hz / 1e6, // Convert to MHz
+            x1: overlay.freq_stop_hz / 1e6,
+            y0: 0,
+            y1: 1,
+            line: { width: isHighlighted ? 2 : 0, color: isHighlighted ? '#ffcc00' : 'rgba(100, 150, 255, 0.2)' },
+            fillcolor: 'rgba(100, 150, 255, 0.2)',
+            opacity: isHighlighted ? 0.5 : 0.3,
+            hoverinfo: 'skip' as const,
+          } as any;
+        })
       : [];
+
+    // Create label annotations (de-cluttering disabled for testing)
+    const annotations: any[] = [];
+    if (showLabels && showOverlays && filteredOverlays && filteredOverlays.length > 0) {
+      // Create annotations for all labels (no de-cluttering)
+      annotations.push(...filteredOverlays.map((overlay) => ({
+        x: (overlay.freq_start_hz + overlay.freq_stop_hz) / 2 / 1e6,
+        y: 0.5, // Middle of y-axis (paper coordinates)
+        text: overlay.assignment_serial,
+        showarrow: false,
+        xref: 'x',
+        yref: 'paper',
+        font: { color: '#f7f7f7', size: 10 },
+        bgcolor: 'rgba(0,0,0,0.7)',
+        bordercolor: 'rgba(255,255,255,0.3)',
+        borderwidth: 1,
+        borderpad: 2,
+      })));
+    }
 
     return {
       title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
@@ -182,6 +234,7 @@ export default function SurveyBandDetailPage() {
         automargin: true,
       },
       shapes,
+      annotations: annotations.length > 0 ? annotations : [],
       showlegend: true,
       legend: {
         orientation: 'h',
@@ -192,7 +245,7 @@ export default function SurveyBandDetailPage() {
         bgcolor: 'rgba(0,0,0,0)',
       },
     };
-  }, [holdsData, band_id, zoomRange, showOverlays, overlays]);
+  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex]);
 
   const handleRelayout = useCallback((eventData: any) => {
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
@@ -201,6 +254,7 @@ export default function SurveyBandDetailPage() {
       setZoomRange(undefined);
     }
   }, []);
+
 
   if (!survey_id || !band_id) {
     return (
@@ -263,19 +317,43 @@ export default function SurveyBandDetailPage() {
         </div>
       </header>
 
-      <section style={{ margin: '2rem 0' }}>
-        <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            type="checkbox"
-            id="show-overlays"
-            checked={showOverlays}
-            onChange={(e) => setShowOverlays(e.target.checked)}
-            style={{ cursor: 'pointer' }}
-          />
-          <label htmlFor="show-overlays" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-            Show Assignment Overlays
-          </label>
-          {overlaysLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
+      <section style={{ 
+        position: 'sticky', 
+        top: 0, 
+        zIndex: 100, 
+        background: '#0c0d10', 
+        paddingBottom: '1rem',
+        marginBottom: '1rem',
+        borderBottom: '1px solid rgba(255,255,255,0.1)'
+      }}>
+        <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input
+              type="checkbox"
+              id="show-overlays"
+              checked={showOverlays}
+              onChange={(e) => setShowOverlays(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <label htmlFor="show-overlays" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+              Show Assignment Overlays
+            </label>
+            {overlaysLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
+          </div>
+          {showOverlays && overlays && overlays.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+              <input
+                type="checkbox"
+                id="show-labels"
+                checked={showLabels}
+                onChange={(e) => setShowLabels(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              <label htmlFor="show-labels" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+                Show assignment labels
+              </label>
+            </div>
+          )}
         </div>
         {traces.length > 0 && (
           <Plot
@@ -288,6 +366,145 @@ export default function SurveyBandDetailPage() {
           />
         )}
       </section>
+
+      {/* Overlay Records Panel */}
+      {showOverlays && filteredOverlays && filteredOverlays.length > 0 && (
+        <section style={{ margin: '2rem 0', padding: '1rem', background: '#0f1320', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <h2 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.25rem' }}>Overlay Records</h2>
+          
+          {/* Filter Input */}
+          <div style={{ marginBottom: '1rem' }}>
+            <input
+              type="text"
+              placeholder="Filter by assignment serial..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              style={{
+                width: '100%',
+                maxWidth: '400px',
+                padding: '0.5rem',
+                background: '#1a1d29',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '0.25rem',
+                color: '#f7f7f7',
+                fontSize: '0.9rem',
+              }}
+            />
+          </div>
+
+          {/* Pagination Controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <label htmlFor="page-size" style={{ color: '#f7f7f7', fontSize: '0.9rem' }}>Show:</label>
+              <select
+                id="page-size"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                style={{
+                  padding: '0.4rem 0.5rem',
+                  background: '#1a1d29',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '0.25rem',
+                  color: '#f7f7f7',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <button
+                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                disabled={currentPage === 1}
+                style={{
+                  padding: '0.4rem 0.75rem',
+                  background: currentPage === 1 ? '#1a1d29' : '#2a2d39',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '0.25rem',
+                  color: currentPage === 1 ? '#666' : '#f7f7f7',
+                  fontSize: '0.9rem',
+                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Previous
+              </button>
+              <span style={{ color: '#f7f7f7', fontSize: '0.9rem' }}>
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage === totalPages}
+                style={{
+                  padding: '0.4rem 0.75rem',
+                  background: currentPage === totalPages ? '#1a1d29' : '#2a2d39',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '0.25rem',
+                  color: currentPage === totalPages ? '#666' : '#f7f7f7',
+                  fontSize: '0.9rem',
+                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Assignment Serial</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Center Frequency (MHz)</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Bandwidth (MHz)</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedOverlays.map((overlay, paginatedIdx) => {
+                  // Calculate the index in the filtered array for highlighting
+                  const filteredIdx = (currentPage - 1) * pageSize + paginatedIdx;
+                  const isHighlighted = highlightedIndex === filteredIdx;
+                  const centerMHz = overlay.center_frequency_hz / 1e6;
+                  const bandwidthMHz = overlay.bandwidth_hz / 1e6;
+                  
+                  return (
+                    <tr
+                      key={filteredIdx}
+                      onMouseEnter={() => setHighlightedIndex(filteredIdx)}
+                      onMouseLeave={() => setHighlightedIndex(null)}
+                      onClick={() => setHighlightedIndex(highlightedIndex === filteredIdx ? null : filteredIdx)}
+                      style={{
+                        borderBottom: '1px solid rgba(255,255,255,0.05)',
+                        cursor: 'pointer',
+                        backgroundColor: isHighlighted ? 'rgba(255, 204, 0, 0.2)' : 'transparent',
+                        transition: 'background-color 0.15s ease',
+                      }}
+                    >
+                      <td style={{ padding: '0.75rem' }}>{overlay.assignment_serial}</td>
+                      <td style={{ padding: '0.75rem' }}>{centerMHz.toFixed(3)}</td>
+                      <td style={{ padding: '0.75rem' }}>{bandwidthMHz.toFixed(3)}</td>
+                      <td style={{ padding: '0.75rem' }}>{overlay.source_name}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {filteredOverlays.length === 0 && filterText && (
+            <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>
+              No assignments match the filter "{filterText}"
+            </p>
+          )}
+        </section>
+      )}
 
       <section style={{ padding: '1rem', marginTop: '2rem' }}>
         <h2 style={{ color: '#f7f7f7', marginBottom: '1rem' }}>Metadata</h2>
