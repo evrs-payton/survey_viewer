@@ -16,6 +16,9 @@ The FastAPI backend exposes the following endpoints:
 - `GET /bands/surveys` – list available surveys from run manifests
 - `GET /bands/survey/{survey_id}/bands` – list bands for a survey
 - `GET /bands/survey/{survey_id}/band/{band_id}/holds?max_points=<n>` – get normalized holds data (min/max/avg) for a band
+- `GET /api/assignments/overlay?site={site}&band_start_hz={start}&band_stop_hz={stop}&valid_on={date}` – get assignment overlays for a frequency band
+  - Query parameters: `site` (required), `band_start_hz` (required, Hz as integer), `band_stop_hz` (required, Hz as integer), `valid_on` (optional, YYYY-MM-DD)
+  - Returns: JSON array of assignment overlay records
 
 Survey ID format: `{mission_type}:{site}:{sensor}:{run_id}` (e.g., `survey:Lask:CRFS:run01`)
 
@@ -29,6 +32,17 @@ Environment variables (backend):
 - `MINIO_BUCKET` (default `rf-lake`)
 - `MINIO_USE_SSL` (`true`/`false`)
 - Optional `MINIO_REGION`
+
+### PostgreSQL Configuration (for Assignment Overlays)
+
+Environment variables (backend):
+- `PGHOST` (e.g., `surveyviewer-postgres` or IP address)
+- `PGPORT` (default `5432`)
+- `PGDATABASE` (database name)
+- `PGUSER` (database user)
+- `PGPASSWORD` (database password)
+
+Note: The database schema must be applied manually on rf-lakehouse using the migration file at `db/migrations/001_create_assignments.sql`.
 
 ## Frontend
 

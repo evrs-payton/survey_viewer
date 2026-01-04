@@ -50,6 +50,15 @@ export interface SurveyHoldsResponse {
   };
 }
 
+export interface AssignmentOverlay {
+  assignment_serial: string;
+  freq_start_hz: number;
+  freq_stop_hz: number;
+  center_frequency_hz: number;
+  bandwidth_hz: number;
+  source_name: string;
+}
+
 export async function listSurveys(): Promise<SurveyInfo[]> {
   return fetchJSON<SurveyInfo[]>('/bands/surveys');
 }
@@ -72,4 +81,20 @@ export async function getSurveyHolds(
   }
   const queryString = query.toString() ? `?${query.toString()}` : '';
   return fetchJSON<SurveyHoldsResponse>(`/bands/survey/${encodedSurveyId}/band/${encodedBandId}/holds${queryString}`);
+}
+
+export async function getAssignmentOverlays(
+  site: string,
+  bandStartHz: number,
+  bandStopHz: number,
+  validOn?: string
+): Promise<AssignmentOverlay[]> {
+  const query = new URLSearchParams();
+  query.set('site', site);
+  query.set('band_start_hz', bandStartHz.toString());
+  query.set('band_stop_hz', bandStopHz.toString());
+  if (validOn !== undefined) {
+    query.set('valid_on', validOn);
+  }
+  return fetchJSON<AssignmentOverlay[]>(`/api/assignments/overlay?${query.toString()}`);
 }

@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import bands
+from .routers import assignments, bands
 
 
 def create_app() -> FastAPI:
@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(bands.router)
+    app.include_router(assignments.router)
 
     return app
 

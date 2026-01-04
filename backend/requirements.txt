@@ -8,3 +8,4 @@ duckdb
 minio
 pandas
 pyarrow
+asyncpg

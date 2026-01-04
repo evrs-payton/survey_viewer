@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
-import { getSurveyHolds, type SurveyHoldsResponse } from '../../../lib/api';
+import { getAssignmentOverlays, getSurveyHolds, type AssignmentOverlay, type SurveyHoldsResponse } from '../../../lib/api';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -35,12 +35,15 @@ export default function SurveyBandDetailPage() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
   const [zoomRange, setZoomRange] = useState<[number, number] | undefined>(undefined);
+  const [showOverlays, setShowOverlays] = useState<boolean>(false);
+  const [overlays, setOverlays] = useState<AssignmentOverlay[] | null>(null);
+  const [overlaysLoading, setOverlaysLoading] = useState<boolean>(false);
+
+  const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
+  const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
 
   useEffect(() => {
     if (!survey_id || !band_id) return;
-
-    const decodedSurveyId = decodeURIComponent(survey_id);
-    const decodedBandId = decodeURIComponent(band_id);
 
     setStatus('loading');
     setError(null);
@@ -54,7 +57,43 @@ export default function SurveyBandDetailPage() {
         setError(err?.message ?? 'Failed to load band data');
         setStatus('error');
       });
-  }, [survey_id, band_id]);
+  }, [survey_id, band_id, decodedSurveyId, decodedBandId]);
+
+  // Reset overlays when toggle is disabled or survey/band changes
+  useEffect(() => {
+    if (!showOverlays || !holdsData) {
+      setOverlays(null);
+      setOverlaysLoading(false);
+    }
+  }, [showOverlays, holdsData, decodedSurveyId, decodedBandId]);
+
+  // Fetch overlays when toggle is enabled
+  useEffect(() => {
+    if (!showOverlays || !holdsData || overlays !== null || overlaysLoading) return;
+
+    const metadata = holdsData.metadata;
+    const startHz = metadata.start_hz;
+    const stopHz = metadata.stop_hz;
+    // Extract site from survey_id (format: mission_type:site:sensor:run_id)
+    const parts = decodedSurveyId.split(':');
+    const site = parts.length === 4 ? parts[1] : metadata.site;
+
+    if (!site || startHz === null || startHz === undefined || stopHz === null || stopHz === undefined) {
+      return;
+    }
+
+    setOverlaysLoading(true);
+    getAssignmentOverlays(site, Math.round(startHz), Math.round(stopHz))
+      .then((data) => {
+        setOverlays(data);
+        setOverlaysLoading(false);
+      })
+      .catch((err: any) => {
+        console.error('Failed to load assignment overlays:', err);
+        setOverlays([]);
+        setOverlaysLoading(false);
+      });
+  }, [showOverlays, holdsData, overlays, overlaysLoading, decodedSurveyId]);
 
   const traces = useMemo<PlotData[]>(() => {
     if (!holdsData) return [];
@@ -100,6 +139,22 @@ export default function SurveyBandDetailPage() {
     const bandLabel = metadata?.band_label;
     const bandId = metadata?.band_id || band_id;
 
+    // Create overlay shapes if overlays are enabled and available
+    const shapes = showOverlays && overlays && overlays.length > 0
+      ? overlays.map((overlay) => ({
+          type: 'rect' as const,
+          xref: 'x' as const,
+          yref: 'paper' as const,
+          x0: overlay.freq_start_hz / 1e6, // Convert to MHz
+          x1: overlay.freq_stop_hz / 1e6,
+          y0: 0,
+          y1: 1,
+          line: { width: 0 },
+          fillcolor: 'rgba(100, 150, 255, 0.2)',
+          opacity: 0.3,
+        }))
+      : [];
+
     return {
       title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
       dragmode: 'zoom',
@@ -126,6 +181,7 @@ export default function SurveyBandDetailPage() {
         mirror: true,
         automargin: true,
       },
+      shapes,
       showlegend: true,
       legend: {
         orientation: 'h',
@@ -136,7 +192,7 @@ export default function SurveyBandDetailPage() {
         bgcolor: 'rgba(0,0,0,0)',
       },
     };
-  }, [holdsData, band_id, zoomRange]);
+  }, [holdsData, band_id, zoomRange, showOverlays, overlays]);
 
   const handleRelayout = useCallback((eventData: any) => {
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
@@ -153,9 +209,6 @@ export default function SurveyBandDetailPage() {
       </main>
     );
   }
-
-  const decodedSurveyId = decodeURIComponent(survey_id);
-  const decodedBandId = decodeURIComponent(band_id);
 
   if (status === 'loading') {
     return (
@@ -211,6 +264,19 @@ export default function SurveyBandDetailPage() {
       </header>
 
       <section style={{ margin: '2rem 0' }}>
+        <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <input
+            type="checkbox"
+            id="show-overlays"
+            checked={showOverlays}
+            onChange={(e) => setShowOverlays(e.target.checked)}
+            style={{ cursor: 'pointer' }}
+          />
+          <label htmlFor="show-overlays" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+            Show Assignment Overlays
+          </label>
+          {overlaysLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
+        </div>
         {traces.length > 0 && (
           <Plot
             data={traces}
