@@ -150,3 +150,294 @@ def test_get_overlay_invalid_date_format(client):
     assert response.status_code == 400
     assert "YYYY-MM-DD format" in response.json()["detail"]
 
+
+@pytest.mark.asyncio
+async def test_import_success(client):
+    """Test POST import endpoint with valid data."""
+    mock_result = {
+        "inserted": 2,
+        "skipped": 0,
+        "errors": [],
+    }
+    
+    with patch(
+        "app.routers.assignments.import_assignments_service",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ):
+        response = client.post(
+            "/api/assignments/import",
+            json={
+                "site": "TestSite",
+                "source_name": "SFAF",
+                "assignments": [
+                    {
+                        "agency_serial": "ASSIGN-001",
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 100,
+                        "latitude": 49.4333333333,
+                        "longitude": 7.6,
+                        "valid_from": "2018-06-05",
+                        "expiration_date": "2021-12-31",
+                    },
+                    {
+                        "agency_serial": "ASSIGN-002",
+                        "center_frequency_hz": 2700000,
+                        "bandwidth_hz": 200,
+                        "latitude": None,
+                        "longitude": None,
+                        "valid_from": None,
+                        "expiration_date": None,
+                    },
+                ],
+            },
+        )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["site"] == "TestSite"
+    assert data["source_name"] == "SFAF"
+    assert data["received"] == 2
+    assert data["inserted"] == 2
+    assert data["skipped"] == 0
+    assert data["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_import_skip_duplicates(client):
+    """Test POST import endpoint with duplicate assignments."""
+    mock_result = {
+        "inserted": 1,
+        "skipped": 1,
+        "errors": [],
+    }
+    
+    with patch(
+        "app.routers.assignments.import_assignments_service",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ):
+        response = client.post(
+            "/api/assignments/import",
+            json={
+                "site": "TestSite",
+                "source_name": "SFAF",
+                "assignments": [
+                    {
+                        "agency_serial": "ASSIGN-001",
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 100,
+                        "latitude": None,
+                        "longitude": None,
+                        "valid_from": None,
+                        "expiration_date": None,
+                    },
+                    {
+                        "agency_serial": "ASSIGN-001",  # Duplicate
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 100,
+                        "latitude": None,
+                        "longitude": None,
+                        "valid_from": None,
+                        "expiration_date": None,
+                    },
+                ],
+            },
+        )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["received"] == 2
+    assert data["inserted"] == 1
+    assert data["skipped"] == 1
+    assert len(data["errors"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_import_validation_errors(client):
+    """Test POST import endpoint with validation errors."""
+    mock_result = {
+        "inserted": 1,
+        "skipped": 0,
+        "errors": [
+            {
+                "index": 1,
+                "assignment_serial": "ASSIGN-002",
+                "error": "bandwidth_hz must be > 0",
+            },
+        ],
+    }
+    
+    with patch(
+        "app.routers.assignments.import_assignments_service",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ):
+        response = client.post(
+            "/api/assignments/import",
+            json={
+                "site": "TestSite",
+                "source_name": "SFAF",
+                "assignments": [
+                    {
+                        "agency_serial": "ASSIGN-001",
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 100,
+                        "latitude": None,
+                        "longitude": None,
+                        "valid_from": None,
+                        "expiration_date": None,
+                    },
+                    {
+                        "agency_serial": "ASSIGN-002",
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 0,  # Invalid
+                        "latitude": None,
+                        "longitude": None,
+                        "valid_from": None,
+                        "expiration_date": None,
+                    },
+                ],
+            },
+        )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["received"] == 2
+    assert data["inserted"] == 1
+    assert data["skipped"] == 0
+    assert len(data["errors"]) == 1
+    assert data["errors"][0]["index"] == 1
+    assert data["errors"][0]["assignment_serial"] == "ASSIGN-002"
+    assert "bandwidth_hz must be > 0" in data["errors"][0]["error"]
+
+
+def test_import_missing_site(client):
+    """Test POST import endpoint with missing site."""
+    response = client.post(
+        "/api/assignments/import",
+        json={
+            "source_name": "SFAF",
+            "assignments": [
+                {
+                    "assignment_serial": "ASSIGN-001",
+                    "center_frequency_hz": 2602500,
+                    "bandwidth_hz": 100,
+                },
+            ],
+        },
+    )
+    
+    assert response.status_code == 422  # FastAPI validation error
+
+
+def test_import_empty_site(client):
+    """Test POST import endpoint with empty site."""
+    response = client.post(
+        "/api/assignments/import",
+        json={
+            "site": "",
+            "source_name": "SFAF",
+            "assignments": [
+                {
+                    "assignment_serial": "ASSIGN-001",
+                    "center_frequency_hz": 2602500,
+                    "bandwidth_hz": 100,
+                },
+            ],
+        },
+    )
+    
+    assert response.status_code == 400
+    assert "cannot be empty" in response.json()["detail"].lower()
+
+
+def test_import_empty_assignments(client):
+    """Test POST import endpoint with empty assignments array."""
+    mock_result = {
+        "inserted": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+    
+    with patch(
+        "app.routers.assignments.import_assignments_service",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ):
+        response = client.post(
+            "/api/assignments/import",
+            json={
+                "site": "TestSite",
+                "source_name": "SFAF",
+                "assignments": [],
+            },
+        )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["received"] == 0
+    assert data["inserted"] == 0
+    assert data["skipped"] == 0
+    assert data["errors"] == []
+
+
+def test_import_default_source_name(client):
+    """Test POST import endpoint with default source_name."""
+    mock_result = {
+        "inserted": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+    
+    with patch(
+        "app.routers.assignments.import_assignments_service",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ):
+        response = client.post(
+            "/api/assignments/import",
+            json={
+                "site": "TestSite",
+                # source_name omitted, should default to "SFAF"
+                "assignments": [
+                    {
+                        "agency_serial": "ASSIGN-001",
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 100,
+                    },
+                ],
+            },
+        )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source_name"] == "SFAF"  # Should default to SFAF
+
+
+@pytest.mark.asyncio
+async def test_import_database_error(client):
+    """Test POST import endpoint with database error."""
+    with patch(
+        "app.routers.assignments.import_assignments_service",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Database connection failed"),
+    ):
+        response = client.post(
+            "/api/assignments/import",
+            json={
+                "site": "TestSite",
+                "source_name": "SFAF",
+                "assignments": [
+                    {
+                        "agency_serial": "ASSIGN-001",
+                        "center_frequency_hz": 2602500,
+                        "bandwidth_hz": 100,
+                    },
+                ],
+            },
+        )
+    
+    assert response.status_code == 500
+    assert "Database error" in response.json()["detail"]
+

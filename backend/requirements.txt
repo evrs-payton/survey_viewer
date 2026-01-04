@@ -1,11 +1,8 @@
 fastapi
 uvicorn[standard]
 numpy
-scipy
-pillow
 python-multipart
 duckdb
 minio
-pandas
 pyarrow
 asyncpg
