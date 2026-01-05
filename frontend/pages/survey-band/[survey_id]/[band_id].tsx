@@ -368,7 +368,7 @@ export default function SurveyBandDetailPage() {
       </section>
 
       {/* Overlay Records Panel */}
-      {showOverlays && filteredOverlays && filteredOverlays.length > 0 && (
+      {showOverlays && overlays && overlays.length > 0 && (
         <section style={{ margin: '2rem 0', padding: '1rem', background: '#0f1320', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.08)' }}>
           <h2 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.25rem' }}>Overlay Records</h2>
           
@@ -392,113 +392,116 @@ export default function SurveyBandDetailPage() {
             />
           </div>
 
-          {/* Pagination Controls */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <label htmlFor="page-size" style={{ color: '#f7f7f7', fontSize: '0.9rem' }}>Show:</label>
-              <select
-                id="page-size"
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setCurrentPage(1);
-                }}
-                style={{
-                  padding: '0.4rem 0.5rem',
-                  background: '#1a1d29',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: '0.25rem',
-                  color: '#f7f7f7',
-                  fontSize: '0.9rem',
-                  cursor: 'pointer',
-                }}
-              >
-                <option value={5}>5</option>
-                <option value={10}>10</option>
-                <option value={20}>20</option>
-                <option value={50}>50</option>
-              </select>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <button
-                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                disabled={currentPage === 1}
-                style={{
-                  padding: '0.4rem 0.75rem',
-                  background: currentPage === 1 ? '#1a1d29' : '#2a2d39',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: '0.25rem',
-                  color: currentPage === 1 ? '#666' : '#f7f7f7',
-                  fontSize: '0.9rem',
-                  cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
-                }}
-              >
-                Previous
-              </button>
-              <span style={{ color: '#f7f7f7', fontSize: '0.9rem' }}>
-                Page {currentPage} of {totalPages}
-              </span>
-              <button
-                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                disabled={currentPage === totalPages}
-                style={{
-                  padding: '0.4rem 0.75rem',
-                  background: currentPage === totalPages ? '#1a1d29' : '#2a2d39',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: '0.25rem',
-                  color: currentPage === totalPages ? '#666' : '#f7f7f7',
-                  fontSize: '0.9rem',
-                  cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
-                }}
-              >
-                Next
-              </button>
-            </div>
-          </div>
+          {filteredOverlays.length > 0 ? (
+            <>
+              {/* Pagination Controls */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <label htmlFor="page-size" style={{ color: '#f7f7f7', fontSize: '0.9rem' }}>Show:</label>
+                  <select
+                    id="page-size"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    style={{
+                      padding: '0.4rem 0.5rem',
+                      background: '#1a1d29',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '0.25rem',
+                      color: '#f7f7f7',
+                      fontSize: '0.9rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <button
+                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1}
+                    style={{
+                      padding: '0.4rem 0.75rem',
+                      background: currentPage === 1 ? '#1a1d29' : '#2a2d39',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '0.25rem',
+                      color: currentPage === 1 ? '#666' : '#f7f7f7',
+                      fontSize: '0.9rem',
+                      cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    Previous
+                  </button>
+                  <span style={{ color: '#f7f7f7', fontSize: '0.9rem' }}>
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                    disabled={currentPage === totalPages}
+                    style={{
+                      padding: '0.4rem 0.75rem',
+                      background: currentPage === totalPages ? '#1a1d29' : '#2a2d39',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '0.25rem',
+                      color: currentPage === totalPages ? '#666' : '#f7f7f7',
+                      fontSize: '0.9rem',
+                      cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
 
-          {/* Table */}
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Assignment Serial</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Center Frequency (MHz)</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Bandwidth (MHz)</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paginatedOverlays.map((overlay, paginatedIdx) => {
-                  // Calculate the index in the filtered array for highlighting
-                  const filteredIdx = (currentPage - 1) * pageSize + paginatedIdx;
-                  const isHighlighted = highlightedIndex === filteredIdx;
-                  const centerMHz = overlay.center_frequency_hz / 1e6;
-                  const bandwidthMHz = overlay.bandwidth_hz / 1e6;
-                  
-                  return (
-                    <tr
-                      key={filteredIdx}
-                      onMouseEnter={() => setHighlightedIndex(filteredIdx)}
-                      onMouseLeave={() => setHighlightedIndex(null)}
-                      onClick={() => setHighlightedIndex(highlightedIndex === filteredIdx ? null : filteredIdx)}
-                      style={{
-                        borderBottom: '1px solid rgba(255,255,255,0.05)',
-                        cursor: 'pointer',
-                        backgroundColor: isHighlighted ? 'rgba(255, 204, 0, 0.2)' : 'transparent',
-                        transition: 'background-color 0.15s ease',
-                      }}
-                    >
-                      <td style={{ padding: '0.75rem' }}>{overlay.assignment_serial}</td>
-                      <td style={{ padding: '0.75rem' }}>{centerMHz.toFixed(3)}</td>
-                      <td style={{ padding: '0.75rem' }}>{bandwidthMHz.toFixed(3)}</td>
-                      <td style={{ padding: '0.75rem' }}>{overlay.source_name}</td>
+              {/* Table */}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Assignment Serial</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Center Frequency (MHz)</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Bandwidth (MHz)</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Source</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {filteredOverlays.length === 0 && filterText && (
+                  </thead>
+                  <tbody>
+                    {paginatedOverlays.map((overlay, paginatedIdx) => {
+                      // Calculate the index in the filtered array for highlighting
+                      const filteredIdx = (currentPage - 1) * pageSize + paginatedIdx;
+                      const isHighlighted = highlightedIndex === filteredIdx;
+                      const centerMHz = overlay.center_frequency_hz / 1e6;
+                      const bandwidthMHz = overlay.bandwidth_hz / 1e6;
+                      
+                      return (
+                        <tr
+                          key={filteredIdx}
+                          onMouseEnter={() => setHighlightedIndex(filteredIdx)}
+                          onMouseLeave={() => setHighlightedIndex(null)}
+                          onClick={() => setHighlightedIndex(highlightedIndex === filteredIdx ? null : filteredIdx)}
+                          style={{
+                            borderBottom: '1px solid rgba(255,255,255,0.05)',
+                            cursor: 'pointer',
+                            backgroundColor: isHighlighted ? 'rgba(255, 204, 0, 0.2)' : 'transparent',
+                            transition: 'background-color 0.15s ease',
+                          }}
+                        >
+                          <td style={{ padding: '0.75rem' }}>{overlay.assignment_serial}</td>
+                          <td style={{ padding: '0.75rem' }}>{centerMHz.toFixed(3)}</td>
+                          <td style={{ padding: '0.75rem' }}>{bandwidthMHz.toFixed(3)}</td>
+                          <td style={{ padding: '0.75rem' }}>{overlay.source_name}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
             <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>
               No assignments match the filter "{filterText}"
             </p>
