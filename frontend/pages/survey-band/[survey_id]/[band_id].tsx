@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
-import { getAssignmentOverlays, getSurveyHolds, type AssignmentOverlay, type SurveyHoldsResponse } from '../../../lib/api';
+import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion } from '../../../lib/api';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -43,6 +43,18 @@ export default function SurveyBandDetailPage() {
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const [pageSize, setPageSize] = useState<number>(10);
   const [currentPage, setCurrentPage] = useState<number>(1);
+  
+  // Manual regions state
+  const [showManualRegions, setShowManualRegions] = useState<boolean>(false);
+  const [manualRegions, setManualRegions] = useState<ManualRegion[] | null>(null);
+  const [manualRegionsLoading, setManualRegionsLoading] = useState<boolean>(false);
+  const [addRegionMode, setAddRegionMode] = useState<boolean>(false);
+  const [regionSelectionStart, setRegionSelectionStart] = useState<number | null>(null);
+  const [showLabelDialog, setShowLabelDialog] = useState<boolean>(false);
+  const [pendingRegion, setPendingRegion] = useState<{ freq_start: number; freq_stop: number } | null>(null);
+  const [manualRegionLabel, setManualRegionLabel] = useState<string>('');
+  const [highlightedManualRegionIndex, setHighlightedManualRegionIndex] = useState<number | null>(null);
+  const [showManualRegionLabels, setShowManualRegionLabels] = useState<boolean>(false);
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
@@ -99,6 +111,46 @@ export default function SurveyBandDetailPage() {
         setOverlaysLoading(false);
       });
   }, [showOverlays, holdsData, overlays, overlaysLoading, decodedSurveyId]);
+
+  // Reset manual regions when toggle is disabled or survey/band changes
+  useEffect(() => {
+    if (!showManualRegions || !holdsData) {
+      setManualRegions(null);
+      setManualRegionsLoading(false);
+      setAddRegionMode(false);
+      setRegionSelectionStart(null);
+      setShowLabelDialog(false);
+      setPendingRegion(null);
+    }
+  }, [showManualRegions, holdsData, decodedSurveyId, decodedBandId]);
+
+  // Fetch manual regions when toggle is enabled
+  useEffect(() => {
+    if (!showManualRegions || !holdsData || manualRegions !== null || manualRegionsLoading) return;
+
+    const metadata = holdsData.metadata;
+    const startHz = metadata.start_hz;
+    const stopHz = metadata.stop_hz;
+    // Extract site from survey_id (format: mission_type:site:sensor:run_id)
+    const parts = decodedSurveyId.split(':');
+    const site = parts.length === 4 ? parts[1] : metadata.site;
+
+    if (!site || startHz === null || startHz === undefined || stopHz === null || stopHz === undefined) {
+      return;
+    }
+
+    setManualRegionsLoading(true);
+    getManualRegions(site, Math.round(startHz), Math.round(stopHz))
+      .then((data) => {
+        setManualRegions(data);
+        setManualRegionsLoading(false);
+      })
+      .catch((err: any) => {
+        console.error('Failed to load manual regions:', err);
+        setManualRegions([]);
+        setManualRegionsLoading(false);
+      });
+  }, [showManualRegions, holdsData, manualRegions, manualRegionsLoading, decodedSurveyId]);
 
   const traces = useMemo<PlotData[]>(() => {
     if (!holdsData) return [];
@@ -168,8 +220,8 @@ export default function SurveyBandDetailPage() {
     const bandLabel = metadata?.band_label;
     const bandId = metadata?.band_id || band_id;
 
-    // Create overlay shapes if overlays are enabled and available
-    const shapes = showOverlays && filteredOverlays && filteredOverlays.length > 0
+    // Create assignment overlay shapes if overlays are enabled and available
+    const assignmentShapes = showOverlays && filteredOverlays && filteredOverlays.length > 0
       ? filteredOverlays.map((overlay, idx) => {
           const isHighlighted = highlightedIndex === idx;
           return {
@@ -188,28 +240,126 @@ export default function SurveyBandDetailPage() {
         })
       : [];
 
-    // Create label annotations (de-cluttering disabled for testing)
+    // Create manual region shapes if manual regions are enabled and available
+    const manualRegionShapes = showManualRegions && manualRegions && manualRegions.length > 0
+      ? manualRegions.map((region, idx) => {
+          const isHighlighted = highlightedManualRegionIndex === idx;
+          return {
+            type: 'rect' as const,
+            xref: 'x' as const,
+            yref: 'paper' as const,
+            x0: region.freq_start_hz / 1e6, // Convert to MHz
+            x1: region.freq_stop_hz / 1e6,
+            y0: 0,
+            y1: 1,
+            line: { width: isHighlighted ? 2 : 0, color: isHighlighted ? '#ffcc00' : 'rgba(255, 200, 0, 0.3)' },
+            fillcolor: region.color || 'rgba(255, 200, 0, 0.3)',
+            opacity: isHighlighted ? 0.5 : 0.3,
+            hoverinfo: 'skip' as const,
+          } as any;
+        })
+      : [];
+
+    const shapes = [...assignmentShapes, ...manualRegionShapes];
+
+    // Create label annotations with less strict de-cluttering
     const annotations: any[] = [];
-    if (showLabels && showOverlays && filteredOverlays && filteredOverlays.length > 0) {
-      // Create annotations for all labels (no de-cluttering)
-      annotations.push(...filteredOverlays.map((overlay) => ({
-        x: (overlay.freq_start_hz + overlay.freq_stop_hz) / 2 / 1e6,
-        y: 0.5, // Middle of y-axis (paper coordinates)
-        text: overlay.assignment_serial,
-        showarrow: false,
-        xref: 'x',
-        yref: 'paper',
-        font: { color: '#f7f7f7', size: 10 },
-        bgcolor: 'rgba(0,0,0,0.7)',
-        bordercolor: 'rgba(255,255,255,0.3)',
-        borderwidth: 1,
-        borderpad: 2,
-      })));
+    if (showLabels && showOverlays && filteredOverlays && filteredOverlays.length > 0 && metadata) {
+      const startHz = metadata.start_hz;
+      const stopHz = metadata.stop_hz;
+      
+      if (startHz !== null && startHz !== undefined && stopHz !== null && stopHz !== undefined) {
+        const totalRangeMHz = (stopHz - startHz) / 1e6;
+        
+        // Less strict bandwidth threshold: 0.1% of total range (instead of 1%)
+        const minBandwidthMHz = totalRangeMHz * 0.001;
+        const labelsToShow = filteredOverlays.filter(overlay => {
+          const bandwidthMHz = (overlay.freq_stop_hz - overlay.freq_start_hz) / 1e6;
+          return bandwidthMHz >= minBandwidthMHz;
+        });
+        
+        // Less strict collision detection: 0.2 MHz minimum spacing (instead of 0.5 MHz)
+        const sortedLabels = labelsToShow.sort((a, b) => 
+          (a.freq_start_hz + a.freq_stop_hz) / 2 - (b.freq_start_hz + b.freq_stop_hz) / 2
+        );
+        const visibleLabels: AssignmentOverlay[] = [];
+        let lastX = -Infinity;
+        const minLabelSpacingMHz = 0.2; // Less strict: 0.2 MHz instead of 0.5 MHz
+        
+        for (const label of sortedLabels) {
+          const centerX = (label.freq_start_hz + label.freq_stop_hz) / 2 / 1e6;
+          if (centerX - lastX >= minLabelSpacingMHz) {
+            visibleLabels.push(label);
+            lastX = centerX;
+          }
+        }
+        
+        // Create annotations for visible labels
+        annotations.push(...visibleLabels.map((overlay) => ({
+          x: (overlay.freq_start_hz + overlay.freq_stop_hz) / 2 / 1e6,
+          y: 0.5, // Middle of y-axis (paper coordinates)
+          text: overlay.assignment_serial,
+          showarrow: false,
+          xref: 'x',
+          yref: 'paper',
+          font: { color: '#f7f7f7', size: 10 },
+          bgcolor: 'rgba(0,0,0,0.7)',
+          bordercolor: 'rgba(255,255,255,0.3)',
+          borderwidth: 1,
+          borderpad: 2,
+        })));
+      }
+    }
+
+    // Create manual region label annotations
+    if (showManualRegionLabels && showManualRegions && manualRegions && manualRegions.length > 0 && metadata) {
+      const startHz = metadata.start_hz;
+      const stopHz = metadata.stop_hz;
+      
+      if (startHz !== null && startHz !== undefined && stopHz !== null && stopHz !== undefined) {
+        const totalRangeMHz = (stopHz - startHz) / 1e6;
+        const minBandwidthMHz = totalRangeMHz * 0.001;
+        
+        const labelsToShow = manualRegions.filter(region => {
+          const bandwidthMHz = (region.freq_stop_hz - region.freq_start_hz) / 1e6;
+          return bandwidthMHz >= minBandwidthMHz;
+        });
+        
+        const sortedLabels = labelsToShow.sort((a, b) => 
+          (a.freq_start_hz + a.freq_stop_hz) / 2 - (b.freq_start_hz + b.freq_stop_hz) / 2
+        );
+        const visibleLabels: ManualRegion[] = [];
+        let lastX = -Infinity;
+        const minLabelSpacingMHz = 0.2;
+        
+        for (const label of sortedLabels) {
+          const centerX = (label.freq_start_hz + label.freq_stop_hz) / 2 / 1e6;
+          if (centerX - lastX >= minLabelSpacingMHz) {
+            visibleLabels.push(label);
+            lastX = centerX;
+          }
+        }
+        
+        // Create annotations for visible manual region labels
+        annotations.push(...visibleLabels.map((region) => ({
+          x: (region.freq_start_hz + region.freq_stop_hz) / 2 / 1e6,
+          y: 0.5,
+          text: region.label || 'Unlabeled',
+          showarrow: false,
+          xref: 'x',
+          yref: 'paper',
+          font: { color: '#f7f7f7', size: 10 },
+          bgcolor: 'rgba(0,0,0,0.7)',
+          bordercolor: 'rgba(255,255,255,0.3)',
+          borderwidth: 1,
+          borderpad: 2,
+        })));
+      }
     }
 
     return {
       title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
-      dragmode: 'zoom',
+      dragmode: addRegionMode ? 'select' : 'zoom',
       margin: { l: 64, r: 32, t: 80, b: 72 },
       paper_bgcolor: '#0c0d10',
       plot_bgcolor: '#0c0d10',
@@ -245,7 +395,7 @@ export default function SurveyBandDetailPage() {
         bgcolor: 'rgba(0,0,0,0)',
       },
     };
-  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex]);
+  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode]);
 
   const handleRelayout = useCallback((eventData: any) => {
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
@@ -254,6 +404,100 @@ export default function SurveyBandDetailPage() {
       setZoomRange(undefined);
     }
   }, []);
+
+  // Handle click for manual region selection (two-click method)
+  const handlePlotClick = useCallback((eventData: any) => {
+    if (!addRegionMode || !eventData?.points || eventData.points.length === 0) return;
+
+    const point = eventData.points[0];
+    const freqMHz = point.x;
+    const freqHz = freqMHz * 1e6;
+
+    if (regionSelectionStart === null) {
+      // First click - store start frequency
+      setRegionSelectionStart(freqHz);
+    } else {
+      // Second click - calculate range and show dialog
+      const startHz = Math.min(regionSelectionStart, freqHz);
+      const stopHz = Math.max(regionSelectionStart, freqHz);
+      setPendingRegion({ freq_start: startHz, freq_stop: stopHz });
+      setShowLabelDialog(true);
+      setRegionSelectionStart(null);
+    }
+  }, [addRegionMode, regionSelectionStart]);
+
+  // Handle creating a manual region
+  const handleCreateRegion = useCallback(async () => {
+    if (!pendingRegion || !holdsData) return;
+
+    const metadata = holdsData.metadata;
+    const parts = decodedSurveyId.split(':');
+    const site = parts.length === 4 ? parts[1] : metadata.site;
+
+    if (!site) {
+      console.error('Cannot create region: site not found');
+      return;
+    }
+
+    try {
+      await createManualRegion({
+        site,
+        freq_start_hz: Math.round(pendingRegion.freq_start),
+        freq_stop_hz: Math.round(pendingRegion.freq_stop),
+        label: manualRegionLabel.trim() || undefined,
+      });
+
+      // Reload manual regions
+      const startHz = metadata.start_hz;
+      const stopHz = metadata.stop_hz;
+      if (startHz !== null && startHz !== undefined && stopHz !== null && stopHz !== undefined) {
+        const data = await getManualRegions(site, Math.round(startHz), Math.round(stopHz));
+        setManualRegions(data);
+      }
+
+      // Reset state
+      setShowLabelDialog(false);
+      setPendingRegion(null);
+      setManualRegionLabel('');
+      setAddRegionMode(false);
+    } catch (err: any) {
+      console.error('Failed to create manual region:', err);
+      alert(`Failed to create manual region: ${err?.message || 'Unknown error'}`);
+    }
+  }, [pendingRegion, holdsData, decodedSurveyId, manualRegionLabel]);
+
+  // Handle canceling region creation
+  const handleCancelRegion = useCallback(() => {
+    setShowLabelDialog(false);
+    setPendingRegion(null);
+    setManualRegionLabel('');
+    setRegionSelectionStart(null);
+    setAddRegionMode(false);
+  }, []);
+
+  // Handle deleting a manual region
+  const handleDeleteRegion = useCallback(async (regionId: string) => {
+    if (!holdsData) return;
+
+    try {
+      await deleteManualRegion(regionId);
+
+      // Reload manual regions
+      const metadata = holdsData.metadata;
+      const parts = decodedSurveyId.split(':');
+      const site = parts.length === 4 ? parts[1] : metadata.site;
+      const startHz = metadata.start_hz;
+      const stopHz = metadata.stop_hz;
+
+      if (site && startHz !== null && startHz !== undefined && stopHz !== null && stopHz !== undefined) {
+        const data = await getManualRegions(site, Math.round(startHz), Math.round(stopHz));
+        setManualRegions(data);
+      }
+    } catch (err: any) {
+      console.error('Failed to delete manual region:', err);
+      alert(`Failed to delete manual region: ${err?.message || 'Unknown error'}`);
+    }
+  }, [holdsData, decodedSurveyId]);
 
 
   if (!survey_id || !band_id) {
@@ -354,6 +598,60 @@ export default function SurveyBandDetailPage() {
               </label>
             </div>
           )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <input
+              type="checkbox"
+              id="show-manual-regions"
+              checked={showManualRegions}
+              onChange={(e) => setShowManualRegions(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <label htmlFor="show-manual-regions" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+              Show Manual Regions
+            </label>
+            {manualRegionsLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
+            {showManualRegions && (
+              <button
+                onClick={() => {
+                  setAddRegionMode(true);
+                  setRegionSelectionStart(null);
+                }}
+                disabled={addRegionMode}
+                style={{
+                  padding: '0.4rem 0.75rem',
+                  background: addRegionMode ? '#1a1d29' : '#2a2d39',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '0.25rem',
+                  color: addRegionMode ? '#666' : '#f7f7f7',
+                  fontSize: '0.9rem',
+                  cursor: addRegionMode ? 'not-allowed' : 'pointer',
+                  fontWeight: 'bold',
+                  marginLeft: '0.5rem',
+                }}
+              >
+                {addRegionMode ? 'Selection Mode Active' : '+ Add Region'}
+              </button>
+            )}
+          </div>
+          {showManualRegions && manualRegions && manualRegions.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+              <input
+                type="checkbox"
+                id="show-manual-region-labels"
+                checked={showManualRegionLabels}
+                onChange={(e) => setShowManualRegionLabels(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              <label htmlFor="show-manual-region-labels" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+                Show manual region labels
+              </label>
+            </div>
+          )}
+          {showManualRegions && addRegionMode && (
+            <div style={{ marginLeft: '1.5rem', color: '#ffcc00', fontSize: '0.9rem' }}>
+              Selection mode active: Click twice on the chart to define a region
+            </div>
+          )}
         </div>
         {traces.length > 0 && (
           <Plot
@@ -363,6 +661,7 @@ export default function SurveyBandDetailPage() {
             useResizeHandler
             config={{ displaylogo: false, responsive: true }}
             onRelayout={handleRelayout}
+            onClick={handlePlotClick}
           />
         )}
       </section>
@@ -507,6 +806,197 @@ export default function SurveyBandDetailPage() {
             </p>
           )}
         </section>
+      )}
+
+      {/* Manual Regions Panel */}
+      {showManualRegions && (
+        <section style={{ margin: '2rem 0', padding: '1rem', background: '#0f1320', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <h2 style={{ color: '#f7f7f7', fontSize: '1.25rem', margin: 0 }}>Manual Regions</h2>
+            <button
+              onClick={() => {
+                setAddRegionMode(true);
+                setRegionSelectionStart(null);
+              }}
+              disabled={addRegionMode}
+              style={{
+                padding: '0.5rem 1rem',
+                background: addRegionMode ? '#1a1d29' : '#2a2d39',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '0.25rem',
+                color: addRegionMode ? '#666' : '#f7f7f7',
+                fontSize: '0.9rem',
+                cursor: addRegionMode ? 'not-allowed' : 'pointer',
+                fontWeight: 'bold',
+              }}
+            >
+              {addRegionMode ? 'Selection Mode Active' : 'Add Manual Region'}
+            </button>
+          </div>
+
+          {manualRegions && manualRegions.length > 0 ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Label</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Start (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Stop (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualRegions.map((region, idx) => {
+                    const isHighlighted = highlightedManualRegionIndex === idx;
+                    return (
+                      <tr
+                        key={region.id}
+                        onMouseEnter={() => setHighlightedManualRegionIndex(idx)}
+                        onMouseLeave={() => setHighlightedManualRegionIndex(null)}
+                        onClick={() => setHighlightedManualRegionIndex(highlightedManualRegionIndex === idx ? null : idx)}
+                        style={{
+                          borderBottom: '1px solid rgba(255,255,255,0.05)',
+                          cursor: 'pointer',
+                          backgroundColor: isHighlighted ? 'rgba(255, 204, 0, 0.2)' : 'transparent',
+                          transition: 'background-color 0.15s ease',
+                        }}
+                      >
+                        <td style={{ padding: '0.75rem' }}>{region.label || 'Unlabeled'}</td>
+                        <td style={{ padding: '0.75rem' }}>{(region.freq_start_hz / 1e6).toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>{(region.freq_stop_hz / 1e6).toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm(`Delete region "${region.label || 'Unlabeled'}"?`)) {
+                                handleDeleteRegion(region.id);
+                              }
+                            }}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#dc3545',
+                              border: 'none',
+                              borderRadius: '0.25rem',
+                              color: '#fff',
+                              fontSize: '0.85rem',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>
+              No manual regions yet. Click "Add Manual Region" to create one.
+            </p>
+          )}
+        </section>
+      )}
+
+      {/* Label Dialog */}
+      {showLabelDialog && pendingRegion && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              handleCancelRegion();
+            }
+          }}
+        >
+          <div
+            style={{
+              background: '#1a1d29',
+              padding: '2rem',
+              borderRadius: '0.75rem',
+              border: '1px solid rgba(255,255,255,0.1)',
+              minWidth: '400px',
+              maxWidth: '90%',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.25rem' }}>Add Manual Region</h3>
+            <p style={{ color: '#888', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              Frequency range: {(pendingRegion.freq_start / 1e6).toFixed(3)} - {(pendingRegion.freq_stop / 1e6).toFixed(3)} MHz
+            </p>
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label htmlFor="region-label" style={{ display: 'block', color: '#f7f7f7', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
+                Label (optional):
+              </label>
+              <input
+                id="region-label"
+                type="text"
+                value={manualRegionLabel}
+                onChange={(e) => setManualRegionLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleCreateRegion();
+                  } else if (e.key === 'Escape') {
+                    handleCancelRegion();
+                  }
+                }}
+                placeholder="Enter label..."
+                autoFocus
+                style={{
+                  width: '100%',
+                  padding: '0.5rem',
+                  background: '#0c0d10',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '0.25rem',
+                  color: '#f7f7f7',
+                  fontSize: '0.9rem',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleCancelRegion}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#2a2d39',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '0.25rem',
+                  color: '#f7f7f7',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateRegion}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#4ecdc4',
+                  border: 'none',
+                  borderRadius: '0.25rem',
+                  color: '#0c0d10',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <section style={{ padding: '1rem', marginTop: '2rem' }}>

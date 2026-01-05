@@ -59,6 +59,17 @@ export interface AssignmentOverlay {
   source_name: string;
 }
 
+export interface ManualRegion {
+  id: string;
+  site: string;
+  freq_start_hz: number;
+  freq_stop_hz: number;
+  label: string | null;
+  color: string | null;
+  created_by: string | null;
+  created_at_utc: string | null;
+}
+
 export async function listSurveys(): Promise<SurveyInfo[]> {
   return fetchJSON<SurveyInfo[]>('/bands/surveys');
 }
@@ -97,4 +108,45 @@ export async function getAssignmentOverlays(
     query.set('valid_on', validOn);
   }
   return fetchJSON<AssignmentOverlay[]>(`/api/assignments/overlay?${query.toString()}`);
+}
+
+export async function getManualRegions(
+  site: string,
+  bandStartHz: number,
+  bandStopHz: number
+): Promise<ManualRegion[]> {
+  const query = new URLSearchParams();
+  query.set('site', site);
+  query.set('band_start_hz', bandStartHz.toString());
+  query.set('band_stop_hz', bandStopHz.toString());
+  return fetchJSON<ManualRegion[]>(`/api/manual-regions?${query.toString()}`);
+}
+
+export async function createManualRegion(region: {
+  site: string;
+  freq_start_hz: number;
+  freq_stop_hz: number;
+  label?: string;
+  color?: string;
+}): Promise<ManualRegion> {
+  const response = await fetch(`${API_BASE}/api/manual-regions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(region),
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return (await response.json()) as ManualRegion;
+}
+
+export async function deleteManualRegion(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/manual-regions/${id}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
 }
