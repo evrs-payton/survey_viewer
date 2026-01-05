@@ -49,7 +49,7 @@ export default function SurveyBandDetailPage() {
   const [manualRegions, setManualRegions] = useState<ManualRegion[] | null>(null);
   const [manualRegionsLoading, setManualRegionsLoading] = useState<boolean>(false);
   const [addRegionMode, setAddRegionMode] = useState<boolean>(false);
-  const [regionSelectionStart, setRegionSelectionStart] = useState<number | null>(null);
+  const [editingRegion, setEditingRegion] = useState<{ freq_start: number; freq_stop: number; shapeIndex: number } | null>(null);
   const [showLabelDialog, setShowLabelDialog] = useState<boolean>(false);
   const [pendingRegion, setPendingRegion] = useState<{ freq_start: number; freq_stop: number } | null>(null);
   const [manualRegionLabel, setManualRegionLabel] = useState<string>('');
@@ -118,7 +118,7 @@ export default function SurveyBandDetailPage() {
       setManualRegions(null);
       setManualRegionsLoading(false);
       setAddRegionMode(false);
-      setRegionSelectionStart(null);
+      setEditingRegion(null);
       setShowLabelDialog(false);
       setPendingRegion(null);
     }
@@ -260,7 +260,25 @@ export default function SurveyBandDetailPage() {
         })
       : [];
 
-    const shapes = [...assignmentShapes, ...manualRegionShapes];
+    // Add editable temporary region shape if in editing mode
+    // Note: Plotly's editable shapes may not work in react-plotly.js, so we'll use relayout events
+    const editingShape = editingRegion ? [{
+      type: 'rect' as const,
+      xref: 'x' as const,
+      yref: 'paper' as const,
+      x0: editingRegion.freq_start / 1e6,
+      x1: editingRegion.freq_stop / 1e6,
+      y0: 0,
+      y1: 1,
+      line: { width: 2, color: '#ffcc00', dash: 'dash' },
+      fillcolor: 'rgba(255, 200, 0, 0.2)',
+      opacity: 0.4,
+      hoverinfo: 'skip' as const,
+      // Try to make it editable - may not work in react-plotly.js
+      editable: true,
+    } as any] : [];
+
+    const shapes = [...assignmentShapes, ...manualRegionShapes, ...editingShape];
 
     // Create label annotations with less strict de-cluttering
     const annotations: any[] = [];
@@ -359,7 +377,7 @@ export default function SurveyBandDetailPage() {
 
     return {
       title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
-      dragmode: addRegionMode ? 'select' : 'zoom',
+      dragmode: addRegionMode ? 'select' : editingRegion ? 'pan' : 'zoom',
       margin: { l: 64, r: 32, t: 80, b: 72 },
       paper_bgcolor: '#0c0d10',
       plot_bgcolor: '#0c0d10',
@@ -395,36 +413,59 @@ export default function SurveyBandDetailPage() {
         bgcolor: 'rgba(0,0,0,0)',
       },
     };
-  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode]);
+  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode, editingRegion]);
 
   const handleRelayout = useCallback((eventData: any) => {
+    handleRelayoutWithEditing(eventData);
+  }, [handleRelayoutWithEditing]);
+
+  // Handle box selection for manual region creation
+  const handlePlotSelected = useCallback((eventData: any) => {
+    if (!addRegionMode || !eventData?.range) return;
+
+    const xRange = eventData.range.x;
+    if (xRange && xRange.length === 2) {
+      const startMHz = Math.min(xRange[0], xRange[1]);
+      const stopMHz = Math.max(xRange[0], xRange[1]);
+      const startHz = startMHz * 1e6;
+      const stopHz = stopMHz * 1e6;
+
+      // Create editable region
+      setEditingRegion({ freq_start: startHz, freq_stop: stopHz, shapeIndex: 0 });
+      setAddRegionMode(false);
+    }
+  }, [addRegionMode]);
+
+  // Handle relayout events to update editing region when shape is moved/resized
+  const handleRelayoutWithEditing = useCallback((eventData: any) => {
+    // Handle zoom/pan first
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
       setZoomRange([eventData['xaxis.range[0]'], eventData['xaxis.range[1]']]);
     } else if (eventData['xaxis.autorange']) {
       setZoomRange(undefined);
     }
-  }, []);
 
-  // Handle click for manual region selection (two-click method)
-  const handlePlotClick = useCallback((eventData: any) => {
-    if (!addRegionMode || !eventData?.points || eventData.points.length === 0) return;
-
-    const point = eventData.points[0];
-    const freqMHz = point.x;
-    const freqHz = freqMHz * 1e6;
-
-    if (regionSelectionStart === null) {
-      // First click - store start frequency
-      setRegionSelectionStart(freqHz);
-    } else {
-      // Second click - calculate range and show dialog
-      const startHz = Math.min(regionSelectionStart, freqHz);
-      const stopHz = Math.max(regionSelectionStart, freqHz);
-      setPendingRegion({ freq_start: startHz, freq_stop: stopHz });
-      setShowLabelDialog(true);
-      setRegionSelectionStart(null);
+    // Handle shape editing if we're in editing mode
+    // Plotly sends shape updates as 'shapes[0].x0', 'shapes[0].x1', etc.
+    if (editingRegion) {
+      const shapeKeys = Object.keys(eventData).filter(key => key.startsWith('shapes['));
+      if (shapeKeys.length > 0) {
+        // Find the editing shape (it's the last one)
+        const allShapes = showOverlays && filteredOverlays ? filteredOverlays.length : 0;
+        const manualShapes = showManualRegions && manualRegions ? manualRegions.length : 0;
+        const editingShapeIndex = allShapes + manualShapes;
+        
+        const x0Key = `shapes[${editingShapeIndex}].x0`;
+        const x1Key = `shapes[${editingShapeIndex}].x1`;
+        
+        if (eventData[x0Key] !== undefined && eventData[x1Key] !== undefined) {
+          const startHz = Math.min(eventData[x0Key], eventData[x1Key]) * 1e6;
+          const stopHz = Math.max(eventData[x0Key], eventData[x1Key]) * 1e6;
+          setEditingRegion(prev => prev ? { ...prev, freq_start: startHz, freq_stop: stopHz } : null);
+        }
+      }
     }
-  }, [addRegionMode, regionSelectionStart]);
+  }, [editingRegion, showOverlays, filteredOverlays, showManualRegions, manualRegions]);
 
   // Handle creating a manual region
   const handleCreateRegion = useCallback(async () => {
@@ -459,6 +500,7 @@ export default function SurveyBandDetailPage() {
       setShowLabelDialog(false);
       setPendingRegion(null);
       setManualRegionLabel('');
+      setEditingRegion(null);
       setAddRegionMode(false);
     } catch (err: any) {
       console.error('Failed to create manual region:', err);
@@ -466,12 +508,21 @@ export default function SurveyBandDetailPage() {
     }
   }, [pendingRegion, holdsData, decodedSurveyId, manualRegionLabel]);
 
+  // Handle finalizing the editing region (clicking "Done")
+  const handleDoneEditing = useCallback(() => {
+    if (!editingRegion) return;
+    
+    setPendingRegion({ freq_start: editingRegion.freq_start, freq_stop: editingRegion.freq_stop });
+    setEditingRegion(null);
+    setShowLabelDialog(true);
+  }, [editingRegion]);
+
   // Handle canceling region creation
   const handleCancelRegion = useCallback(() => {
     setShowLabelDialog(false);
     setPendingRegion(null);
     setManualRegionLabel('');
-    setRegionSelectionStart(null);
+    setEditingRegion(null);
     setAddRegionMode(false);
   }, []);
 
@@ -610,11 +661,11 @@ export default function SurveyBandDetailPage() {
               Show Manual Regions
             </label>
             {manualRegionsLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
-            {showManualRegions && (
+            {showManualRegions && !editingRegion && (
               <button
                 onClick={() => {
                   setAddRegionMode(true);
-                  setRegionSelectionStart(null);
+                  setEditingRegion(null);
                 }}
                 disabled={addRegionMode}
                 style={{
@@ -649,20 +700,135 @@ export default function SurveyBandDetailPage() {
           )}
           {showManualRegions && addRegionMode && (
             <div style={{ marginLeft: '1.5rem', color: '#ffcc00', fontSize: '0.9rem' }}>
-              Selection mode active: Click twice on the chart to define a region
+              Selection mode active: Click and drag on the chart to select a region
             </div>
           )}
         </div>
         {traces.length > 0 && (
-          <Plot
-            data={traces}
-            layout={layout}
-            style={{ width: '100%', height: '600px', display: 'block' }}
-            useResizeHandler
-            config={{ displaylogo: false, responsive: true }}
-            onRelayout={handleRelayout}
-            onClick={handlePlotClick}
-          />
+          <div style={{ position: 'relative' }}>
+            <Plot
+              data={traces}
+              layout={layout}
+              style={{ width: '100%', height: '600px', display: 'block' }}
+              useResizeHandler
+              config={{ displaylogo: false, responsive: true }}
+              onRelayout={handleRelayout}
+              onSelected={handlePlotSelected}
+            />
+            {editingRegion && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '1rem',
+                  right: '1rem',
+                  zIndex: 1000,
+                  background: '#1a1d29',
+                  padding: '1rem',
+                  borderRadius: '0.5rem',
+                  border: '2px solid #ffcc00',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                  minWidth: '300px',
+                }}
+              >
+                <div style={{ marginBottom: '1rem', color: '#f7f7f7', fontWeight: 'bold' }}>
+                  Adjust Region
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem' }}>
+                  <div>
+                    <label style={{ display: 'block', color: '#f7f7f7', fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                      Start (MHz):
+                    </label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      value={(editingRegion.freq_start / 1e6).toFixed(3)}
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value);
+                        if (!isNaN(value) && value >= 0) {
+                          const newStartHz = value * 1e6;
+                          if (newStartHz < editingRegion.freq_stop) {
+                            setEditingRegion({ ...editingRegion, freq_start: newStartHz });
+                          }
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '0.4rem',
+                        background: '#0c0d10',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        borderRadius: '0.25rem',
+                        color: '#f7f7f7',
+                        fontSize: '0.9rem',
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', color: '#f7f7f7', fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                      Stop (MHz):
+                    </label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      value={(editingRegion.freq_stop / 1e6).toFixed(3)}
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value);
+                        if (!isNaN(value) && value >= 0) {
+                          const newStopHz = value * 1e6;
+                          if (newStopHz > editingRegion.freq_start) {
+                            setEditingRegion({ ...editingRegion, freq_stop: newStopHz });
+                          }
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '0.4rem',
+                        background: '#0c0d10',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        borderRadius: '0.25rem',
+                        color: '#f7f7f7',
+                        fontSize: '0.9rem',
+                      }}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={() => {
+                      setEditingRegion(null);
+                      setAddRegionMode(false);
+                    }}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: '#dc3545',
+                      border: 'none',
+                      borderRadius: '0.25rem',
+                      color: '#fff',
+                      fontSize: '0.9rem',
+                      cursor: 'pointer',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDoneEditing}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: '#4ecdc4',
+                      border: 'none',
+                      borderRadius: '0.25rem',
+                      color: '#0c0d10',
+                      fontSize: '0.9rem',
+                      cursor: 'pointer',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </section>
 
