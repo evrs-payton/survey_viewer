@@ -232,8 +232,8 @@ export default function SurveyBandDetailPage() {
             x1: overlay.freq_stop_hz / 1e6,
             y0: 0,
             y1: 1,
-            line: { width: isHighlighted ? 2 : 0, color: isHighlighted ? '#ffcc00' : 'rgba(100, 150, 255, 0.2)' },
-            fillcolor: 'rgba(100, 150, 255, 0.2)',
+            line: { width: isHighlighted ? 2 : 0, color: isHighlighted ? '#ffcc00' : 'rgba(76, 175, 80, 0.3)' },
+            fillcolor: 'rgba(76, 175, 80, 0.3)',
             opacity: isHighlighted ? 0.5 : 0.3,
             hoverinfo: 'skip' as const,
           } as any;
@@ -261,7 +261,7 @@ export default function SurveyBandDetailPage() {
       : [];
 
     // Add editable temporary region shape if in editing mode
-    // Note: Plotly's editable shapes may not work in react-plotly.js, so we'll use relayout events
+    // Plotly shapes with editable: true can be dragged and resized by clicking and dragging
     const editingShape = editingRegion ? [{
       type: 'rect' as const,
       xref: 'x' as const,
@@ -270,12 +270,12 @@ export default function SurveyBandDetailPage() {
       x1: editingRegion.freq_stop / 1e6,
       y0: 0,
       y1: 1,
-      line: { width: 2, color: '#ffcc00', dash: 'dash' },
+      line: { width: 2, color: '#ffcc00' },
       fillcolor: 'rgba(255, 200, 0, 0.2)',
       opacity: 0.4,
       hoverinfo: 'skip' as const,
-      // Try to make it editable - may not work in react-plotly.js
       editable: true,
+      layer: 'above' as const,
     } as any] : [];
 
     const shapes = [...assignmentShapes, ...manualRegionShapes, ...editingShape];
@@ -377,7 +377,7 @@ export default function SurveyBandDetailPage() {
 
     return {
       title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
-      dragmode: addRegionMode ? 'select' : editingRegion ? 'pan' : 'zoom',
+      dragmode: addRegionMode ? 'select' : 'zoom',
       margin: { l: 64, r: 32, t: 80, b: 72 },
       paper_bgcolor: '#0c0d10',
       plot_bgcolor: '#0c0d10',
@@ -415,10 +415,6 @@ export default function SurveyBandDetailPage() {
     };
   }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode, editingRegion]);
 
-  const handleRelayout = useCallback((eventData: any) => {
-    handleRelayoutWithEditing(eventData);
-  }, [handleRelayoutWithEditing]);
-
   // Handle box selection for manual region creation
   const handlePlotSelected = useCallback((eventData: any) => {
     if (!addRegionMode || !eventData?.range) return;
@@ -437,7 +433,7 @@ export default function SurveyBandDetailPage() {
   }, [addRegionMode]);
 
   // Handle relayout events to update editing region when shape is moved/resized
-  const handleRelayoutWithEditing = useCallback((eventData: any) => {
+  const handleRelayout = useCallback((eventData: any) => {
     // Handle zoom/pan first
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
       setZoomRange([eventData['xaxis.range[0]'], eventData['xaxis.range[1]']]);
@@ -711,7 +707,11 @@ export default function SurveyBandDetailPage() {
               layout={layout}
               style={{ width: '100%', height: '600px', display: 'block' }}
               useResizeHandler
-              config={{ displaylogo: false, responsive: true }}
+              config={{ 
+                displaylogo: false, 
+                responsive: true,
+                editable: editingRegion !== null, // Enable editing when in editing mode
+              }}
               onRelayout={handleRelayout}
               onSelected={handlePlotSelected}
             />
@@ -1002,34 +1002,39 @@ export default function SurveyBandDetailPage() {
 
           {manualRegions && manualRegions.length > 0 ? (
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Label</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Start (MHz)</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Stop (MHz)</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {manualRegions.map((region, idx) => {
-                    const isHighlighted = highlightedManualRegionIndex === idx;
-                    return (
-                      <tr
-                        key={region.id}
-                        onMouseEnter={() => setHighlightedManualRegionIndex(idx)}
-                        onMouseLeave={() => setHighlightedManualRegionIndex(null)}
-                        onClick={() => setHighlightedManualRegionIndex(highlightedManualRegionIndex === idx ? null : idx)}
-                        style={{
-                          borderBottom: '1px solid rgba(255,255,255,0.05)',
-                          cursor: 'pointer',
-                          backgroundColor: isHighlighted ? 'rgba(255, 204, 0, 0.2)' : 'transparent',
-                          transition: 'background-color 0.15s ease',
-                        }}
-                      >
-                        <td style={{ padding: '0.75rem' }}>{region.label || 'Unlabeled'}</td>
-                        <td style={{ padding: '0.75rem' }}>{(region.freq_start_hz / 1e6).toFixed(3)}</td>
-                        <td style={{ padding: '0.75rem' }}>{(region.freq_stop_hz / 1e6).toFixed(3)}</td>
+                <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Label</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Center Frequency (MHz)</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Bandwidth (MHz)</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manualRegions.map((region, idx) => {
+                      const isHighlighted = highlightedManualRegionIndex === idx;
+                      // Calculate center frequency and bandwidth from the range
+                      const centerHz = (region.freq_start_hz + region.freq_stop_hz) / 2;
+                      const bandwidthHz = region.freq_stop_hz - region.freq_start_hz;
+                      const centerMHz = centerHz / 1e6;
+                      const bandwidthMHz = bandwidthHz / 1e6;
+                      return (
+                        <tr
+                          key={region.id}
+                          onMouseEnter={() => setHighlightedManualRegionIndex(idx)}
+                          onMouseLeave={() => setHighlightedManualRegionIndex(null)}
+                          onClick={() => setHighlightedManualRegionIndex(highlightedManualRegionIndex === idx ? null : idx)}
+                          style={{
+                            borderBottom: '1px solid rgba(255,255,255,0.05)',
+                            cursor: 'pointer',
+                            backgroundColor: isHighlighted ? 'rgba(255, 204, 0, 0.2)' : 'transparent',
+                            transition: 'background-color 0.15s ease',
+                          }}
+                        >
+                          <td style={{ padding: '0.75rem' }}>{region.label || 'Unlabeled'}</td>
+                          <td style={{ padding: '0.75rem' }}>{centerMHz.toFixed(3)}</td>
+                          <td style={{ padding: '0.75rem' }}>{bandwidthMHz.toFixed(3)}</td>
                         <td style={{ padding: '0.75rem' }}>
                           <button
                             onClick={(e) => {

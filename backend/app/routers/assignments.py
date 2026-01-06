@@ -7,12 +7,17 @@ import logging
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Path, Query, UploadFile
 from pydantic import BaseModel, Field, ConfigDict
 
 from ..services.assignments_service import get_overlays as get_overlays_service
 from ..services.assignment_import import import_assignments as import_assignments_service
 from ..services.sfaf_parser import parse_sfaf_content
+from ..services.assignments_admin import (
+    list_sites as list_sites_service,
+    list_assignments_for_site as list_assignments_for_site_service,
+    delete_assignment as delete_assignment_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,26 @@ class ImportResponse(BaseModel):
     inserted: int = Field(..., description="Number of assignments inserted")
     skipped: int = Field(..., description="Number of assignments skipped (duplicates)")
     errors: List[ImportError] = Field(default_factory=list, description="List of per-record errors")
+
+
+class AssignmentRecordOut(BaseModel):
+    """Assignment record as returned by admin/list endpoints."""
+
+    id: int = Field(..., description="Primary key")
+    site: str = Field(..., description="Site name")
+    assignment_serial: str = Field(..., description="Assignment serial number")
+    source_name: str = Field(..., description="Source name")
+    center_frequency_hz: int = Field(..., description="Center frequency in Hz")
+    bandwidth_hz: int = Field(..., description="Bandwidth in Hz")
+    freq_start_hz: int = Field(..., description="Start frequency in Hz")
+    freq_stop_hz: int = Field(..., description="Stop frequency in Hz")
+    latitude: Optional[float] = Field(None, description="Latitude (optional)")
+    longitude: Optional[float] = Field(None, description="Longitude (optional)")
+    valid_from: Optional[str] = Field(None, description="Valid-from date (YYYY-MM-DD)")
+    valid_to: Optional[str] = Field(None, description="Valid-to date (YYYY-MM-DD)")
+    ingested_at_utc: Optional[str] = Field(
+        None, description="Ingestion timestamp in UTC (ISO 8601)"
+    )
 
 
 @router.get("/overlay")
@@ -122,6 +147,50 @@ async def get_overlay(
         # Unexpected errors
         logger.error(f"Unexpected error in get_overlay endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.get("/sites", response_model=List[str])
+async def list_sites() -> List[str]:
+    """List distinct sites that currently have assignments."""
+    try:
+        return await list_sites_service()
+    except RuntimeError as e:
+        logger.error("Database error in list_sites endpoint: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:  # pragma: no cover - unexpected
+        logger.error("Unexpected error in list_sites endpoint: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {str(e)}"
+        )
+
+
+@router.get(
+    "/by-site/{site}",
+    response_model=List[AssignmentRecordOut],
+)
+async def list_assignments_for_site(site: str = Path(..., description="Site name")):
+    """List all assignments for a single site."""
+    if not site or not site.strip():
+        raise HTTPException(status_code=400, detail="site is required and cannot be empty")
+
+    try:
+        records = await list_assignments_for_site_service(site.strip())
+        # Pydantic model will validate/serialize records dicts
+        return [AssignmentRecordOut.model_validate(r) for r in records]
+    except RuntimeError as e:
+        logger.error(
+            "Database error in list_assignments_for_site endpoint: %s", e, exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:  # pragma: no cover - unexpected
+        logger.error(
+            "Unexpected error in list_assignments_for_site endpoint: %s",
+            e,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {str(e)}"
+        )
 
 
 @router.post("/import", response_model=ImportResponse)
@@ -355,4 +424,28 @@ async def import_assignments_file(
         # Unexpected errors
         logger.error(f"Unexpected error in import_assignments_file endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.delete("/{assignment_id}", status_code=204)
+async def delete_assignment(assignment_id: int = Path(..., description="Assignment id")):
+    """Delete a single assignment by id."""
+    try:
+        deleted = await delete_assignment_service(assignment_id)
+    except RuntimeError as e:
+        logger.error(
+            "Database error in delete_assignment endpoint: %s", e, exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:  # pragma: no cover - unexpected
+        logger.error(
+            "Unexpected error in delete_assignment endpoint: %s", e, exc_info=True
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {str(e)}"
+        )
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    # FastAPI will return 204 No Content when no body is returned
 

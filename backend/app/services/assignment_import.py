@@ -92,7 +92,7 @@ async def import_assignments(
                     errors.append({
                         "index": index,
                         "assignment_serial": str(assignment_serial) if assignment_serial else "",
-                        "error": "agency_serial is required",
+                        "error": "agency_serial is required (assignment_serial is required)",
                     })
                     continue
                 
@@ -151,7 +151,7 @@ async def import_assignments(
                         errors.append({
                             "index": index,
                             "assignment_serial": assignment_serial,
-                            "error": f"valid_from must be in YYYY-MM-DD or ISO format, got: {valid_from_str}",
+                            "error": f"valid_from must be in YYYY-MM-DD format (or ISO timestamp), got: {valid_from_str}",
                         })
                         continue
                 
@@ -164,7 +164,7 @@ async def import_assignments(
                         errors.append({
                             "index": index,
                             "assignment_serial": assignment_serial,
-                            "error": f"{source_field} must be in YYYY-MM-DD or ISO format, got: {valid_to_str}",
+                            "error": f"{source_field} must be in YYYY-MM-DD format (or ISO timestamp), got: {valid_to_str}",
                         })
                         continue
                 

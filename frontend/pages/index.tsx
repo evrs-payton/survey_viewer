@@ -15,6 +15,22 @@ export default function IndexPage() {
           </Link>
         </div>
       </header>
+
+      <section style={{ padding: '1.5rem 0', borderTop: '1px solid #eee', marginTop: '1.5rem' }}>
+        <div className="app-header" style={{ padding: 0 }}>
+          <div>
+            <h2>Spectrum assignments</h2>
+            <p className="muted">
+              Manage assignment overlays imported from SFAF or JSON files by site.
+            </p>
+          </div>
+          <div className="controls">
+            <Link href="/assignments" className="button">
+              Manage assignments
+            </Link>
+          </div>
+        </div>
+      </section>
     </main>
   );
 }

@@ -59,6 +59,22 @@ export interface AssignmentOverlay {
   source_name: string;
 }
 
+export interface AssignmentRecord {
+  id: number;
+  site: string;
+  assignment_serial: string;
+  source_name: string;
+  center_frequency_hz: number;
+  bandwidth_hz: number;
+  freq_start_hz: number;
+  freq_stop_hz: number;
+  latitude: number | null;
+  longitude: number | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  ingested_at_utc: string | null;
+}
+
 export interface ManualRegion {
   id: string;
   site: string;
@@ -108,6 +124,57 @@ export async function getAssignmentOverlays(
     query.set('valid_on', validOn);
   }
   return fetchJSON<AssignmentOverlay[]>(`/api/assignments/overlay?${query.toString()}`);
+}
+
+export async function listAssignmentSites(): Promise<string[]> {
+  return fetchJSON<string[]>('/api/assignments/sites');
+}
+
+export async function listAssignmentsForSite(site: string): Promise<AssignmentRecord[]> {
+  const encodedSite = encodeURIComponent(site);
+  return fetchJSON<AssignmentRecord[]>(`/api/assignments/by-site/${encodedSite}`);
+}
+
+export async function uploadAssignmentsFile(
+  site: string,
+  file: File,
+  sourceName?: string
+): Promise<void> {
+  const formData = new FormData();
+  formData.append('site', site);
+  if (sourceName) {
+    formData.append('source_name', sourceName);
+  }
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE}/api/assignments/import/file`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let message = `Request failed: ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data?.detail) {
+        message = Array.isArray(data.detail)
+          ? data.detail.map((d: any) => d.msg ?? String(d)).join('; ')
+          : data.detail;
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+    throw new Error(message);
+  }
+}
+
+export async function deleteAssignment(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/assignments/${id}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
 }
 
 export async function getManualRegions(
