@@ -1,16 +1,43 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 import { listSurveys, listSurveyBands, type SurveyInfo, type SurveyBandInfo } from '../lib/api';
 
 type Status = 'idle' | 'loading' | 'error' | 'ready';
 
-function formatSurveyId(surveyId: string): string {
-  const parts = surveyId.split(':');
+function formatMonthYear(year: number, month: number): string {
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${monthNames[month - 1]} ${year}`;
+}
+
+function formatSurveyId(survey: SurveyInfo): string {
+  const site = survey.site || '';
+  if (survey.year !== undefined && survey.month !== undefined) {
+    return `${site} - ${formatMonthYear(survey.year, survey.month)}`;
+  }
+  // Fallback to original format if date info not available
+  const parts = survey.survey_id.split(':');
   if (parts.length === 4) {
     return `Mission: ${parts[0]}, Site: ${parts[1]}, Sensor: ${parts[2]}, Run: ${parts[3]}`;
   }
-  return surveyId;
+  return survey.survey_id;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds.toFixed(0)}s`;
+  } else if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}m`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (minutes === 0) {
+      return `${hours}h`;
+    }
+    return `${hours}h ${minutes}m`;
+  }
 }
 
 export default function SurveysPage() {
@@ -122,7 +149,7 @@ export default function SurveysPage() {
             ) : (
               surveys.map((survey) => (
                 <option key={survey.survey_id} value={survey.survey_id}>
-                  {formatSurveyId(survey.survey_id)}
+                  {formatSurveyId(survey)}
                 </option>
               ))
             )}
@@ -139,17 +166,18 @@ export default function SurveysPage() {
             <article key={`${band.survey_id}-${band.band_id}`} className="band-card">
               <div className="band-card__heading">
                 <h2>{band.band_label ?? `Band ${band.band_id}`}</h2>
-                <span className="badge">band {band.band_id}</span>
               </div>
               <dl className="band-card__meta">
                 <div className="meta-row">
                   <dt>Survey ID</dt>
                   <dd style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{band.survey_id}</dd>
                 </div>
-                <div className="meta-row">
-                  <dt>Band ID</dt>
-                  <dd>{band.band_id}</dd>
-                </div>
+                {band.capture_duration_sec_active !== undefined && (
+                  <div className="meta-row">
+                    <dt>Capture Duration</dt>
+                    <dd>{formatDuration(band.capture_duration_sec_active)}</dd>
+                  </div>
+                )}
                 {band.axis && (
                   <>
                     {band.axis.start_hz !== undefined && (

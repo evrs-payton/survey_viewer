@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import tempfile
+from datetime import datetime
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -81,6 +82,7 @@ class RfprocGoldSilverDataSource:
 
         Returns:
             List of survey dictionaries with 'survey_id' in format '{mission_type}:{site}:{sensor}:{run_id}'
+            and optional 'year' and 'month' fields extracted from run manifest
         """
         client = get_minio_client()
         bucket = bucket_name()
@@ -109,6 +111,44 @@ class RfprocGoldSilverDataSource:
 
             survey_id = f"{mission_type}:{site}:{sensor}:{run_id}"
             if survey_id not in surveys:
+                # Read run manifest to extract date information
+                run_manifest = _read_manifest(client, bucket, obj.object_name)
+                year = None
+                month = None
+
+                if run_manifest:
+                    # Try to extract from included_days first (format: YYYY-MM-DD)
+                    included_days = run_manifest.get("included_days", [])
+                    if included_days and len(included_days) > 0:
+                        # Parse first day: YYYY-MM-DD
+                        first_day = included_days[0]
+                        if isinstance(first_day, str) and len(first_day) >= 7:
+                            parts = first_day.split("-")
+                            if len(parts) >= 2:
+                                try:
+                                    year = int(parts[0])
+                                    month = int(parts[1])
+                                except (ValueError, IndexError):
+                                    pass
+                    
+                    # Fallback to time_start_utc if included_days didn't work
+                    if year is None or month is None:
+                        time_start_utc = run_manifest.get("time_start_utc")
+                        if time_start_utc:
+                            try:
+                                # Parse ISO format: 2025-09-15T10:30:00Z or 2025-09-15T10:30:00+00:00
+                                time_str = time_start_utc.replace("Z", "+00:00") if "Z" in time_start_utc else time_start_utc
+                                # Handle both with and without timezone
+                                if "+" in time_str or time_str.endswith("+00:00"):
+                                    dt = datetime.fromisoformat(time_str)
+                                else:
+                                    # Parse without timezone
+                                    dt = datetime.fromisoformat(time_str)
+                                year = dt.year
+                                month = dt.month
+                            except (ValueError, AttributeError):
+                                pass
+
                 surveys[survey_id] = {
                     "survey_id": survey_id,
                     "mission_type": mission_type,
@@ -116,6 +156,11 @@ class RfprocGoldSilverDataSource:
                     "sensor": sensor,
                     "run_id": run_id,
                 }
+                
+                # Add year and month if we successfully extracted them
+                if year is not None and month is not None:
+                    surveys[survey_id]["year"] = year
+                    surveys[survey_id]["month"] = month
 
         return sorted(surveys.values(), key=lambda x: x["survey_id"])
 
@@ -158,19 +203,37 @@ class RfprocGoldSilverDataSource:
 
         for band_id, band_info in bands.items():
             axis = band_info.get("axis", {})
-            result.append(
-                {
-                    "band_id": band_id,
-                    "band_label": band_info.get("band_label", ""),
-                    "survey_id": survey_id,
-                    "axis": {
-                        "start_hz": axis.get("start_hz"),
-                        "step_hz": axis.get("step_hz"),
-                        "n_freqs": axis.get("n_freqs"),
-                        "stop_hz": axis.get("stop_hz"),
-                    },
-                }
-            )
+            band_dict = {
+                "band_id": band_id,
+                "band_label": band_info.get("band_label", ""),
+                "survey_id": survey_id,
+                "axis": {
+                    "start_hz": axis.get("start_hz"),
+                    "step_hz": axis.get("step_hz"),
+                    "n_freqs": axis.get("n_freqs"),
+                    "stop_hz": axis.get("stop_hz"),
+                },
+            }
+            
+            # Extract capture_duration_sec_active from silver manifests
+            silver_manifest_paths = band_info.get("silver_manifests", [])
+            capture_durations = []
+            
+            for manifest_path in silver_manifest_paths:
+                silver_manifest = _read_manifest(client, bucket, manifest_path)
+                if silver_manifest:
+                    capture_duration = silver_manifest.get("capture_duration_sec_active")
+                    if capture_duration is not None:
+                        try:
+                            capture_durations.append(float(capture_duration))
+                        except (ValueError, TypeError):
+                            pass
+            
+            # Aggregate capture durations: sum if multiple days
+            if capture_durations:
+                band_dict["capture_duration_sec_active"] = sum(capture_durations)
+            
+            result.append(band_dict)
 
         return sorted(result, key=lambda x: x["band_id"])
 

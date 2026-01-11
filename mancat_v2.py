@@ -359,7 +359,7 @@ def main():
     access_key = pick("access_key")
     secret_key = pick("secret_key")
     bucket = pick("bucket", "rf-lake")
-    mission_type = pick("mission_type", "baseline")
+    mission_type = pick("mission_type", "survey")
     site = pick("site", "lab")
     sensor = pick("sensor", "unknown")
     location = pick("location", site)

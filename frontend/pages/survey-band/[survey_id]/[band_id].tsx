@@ -163,15 +163,6 @@ export default function SurveyBandDetailPage() {
     return [
       {
         x: freqsMHz,
-        y: minHold,
-        type: 'scatter',
-        mode: 'lines',
-        name: 'Min',
-        line: { color: '#ff6b6b', width: 1.5 },
-        hoverinfo: 'x+y+name',
-      },
-      {
-        x: freqsMHz,
         y: avgHold,
         type: 'scatter',
         mode: 'lines',
@@ -186,6 +177,15 @@ export default function SurveyBandDetailPage() {
         mode: 'lines',
         name: 'Max',
         line: { color: '#ffa500', width: 1.5 },
+        hoverinfo: 'x+y+name',
+      },
+      {
+        x: freqsMHz,
+        y: minHold,
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Min',
+        line: { color: '#ff6b6b', width: 1.5 },
         hoverinfo: 'x+y+name',
       },
     ];

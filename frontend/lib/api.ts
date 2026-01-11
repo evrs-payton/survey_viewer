@@ -15,6 +15,8 @@ export interface SurveyInfo {
   site?: string;
   sensor?: string;
   run_id?: string;
+  year?: number;
+  month?: number;
 }
 
 export interface SurveyBandInfo {
@@ -27,6 +29,7 @@ export interface SurveyBandInfo {
     n_freqs?: number;
     stop_hz?: number;
   };
+  capture_duration_sec_active?: number;
 }
 
 export interface SurveyHoldsResponse {
