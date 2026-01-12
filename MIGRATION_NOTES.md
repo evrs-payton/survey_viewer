@@ -157,21 +157,25 @@ The signal activity visualization feature provides two capabilities:
 
 ### Data Source
 
-Signal activity data is aggregated from silver products (`product=signal_activity`) per band. The aggregation method uses **per-bin maximum** across all days in the run:
+Signal activity data is read from **gold products** (`product=signal_activity`) per band. The gold product pre-computes run-level aggregation using **per-bin maximum** across all days in the run:
 
-- For each frequency bin `i`: `activity_run[i] = max(activity_fraction[i])` across all days
+- Gold product path: `gold/mission_type={mission_type}/site={site}/sensor={sensor}/run_id={run_id}/band_id={band_id}/product=signal_activity/data.parquet`
+- For each frequency bin `i`: `activity_run[i] = max(activity_fraction[i])` across all days (computed during gold product creation)
 - This shows the peak activity per frequency bin across the entire run
+
+**Note**: The gold product must be created first using `rfproc gold signal-activity` before the backend can serve signal activity data.
 
 ### Backend Implementation
 
 **Endpoints**:
-- `GET /bands/survey/{survey_id}/band/{band_id}/signal-activity` - Returns aggregated signal activity data
+- `GET /bands/survey/{survey_id}/band/{band_id}/signal-activity` - Returns signal activity data from gold product
 - `GET /bands/survey/{survey_id}/band/{band_id}/signal-activity/regions?threshold=0.05` - Returns thresholded regions
 
 **Service Method**: `RfprocGoldSilverDataSource.get_signal_activity()`
-- Discovers silver signal_activity products from run manifest
-- Validates axis compatibility with holds axis (using `validate_axis_compatibility()`)
-- Aggregates using per-bin maximum
+- Constructs gold manifest path deterministically from survey_id and band_id
+- Reads gold manifest and validates status == "success"
+- Reads gold parquet data (single parquet read, no aggregation needed)
+- Extracts `activity_fraction` array and generates frequency axis
 - Returns: `{freqs: List[float], activity: List[float], metadata: Dict}`
 
 **Region Extraction**: `_extract_activity_regions()`

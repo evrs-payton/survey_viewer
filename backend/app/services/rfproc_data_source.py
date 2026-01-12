@@ -431,10 +431,9 @@ class RfprocGoldSilverDataSource:
         survey_id: str,
         band_id: str,
     ) -> Dict:
-        """Get aggregated signal activity data for a band.
+        """Get signal activity data for a band from gold product.
         
-        Aggregates signal_activity from multiple silver products (per-day) by taking
-        per-bin maximum activity_fraction across all days.
+        Reads pre-aggregated signal_activity from gold product (run-level per-bin maximum).
         
         Args:
             survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
@@ -456,8 +455,8 @@ class RfprocGoldSilverDataSource:
             }
         
         Raises:
-            ValueError: If survey_id format is invalid, run manifest not found,
-                        no signal_activity products found, or axis mismatch
+            ValueError: If survey_id format is invalid, gold manifest not found,
+                        or gold product status is not success
         """
         # Parse survey_id
         parts = survey_id.split(":")
@@ -465,119 +464,66 @@ class RfprocGoldSilverDataSource:
             raise ValueError(f"Invalid survey_id format: {survey_id} (expected 'mission_type:site:sensor:run_id')")
         mission_type, site, sensor, run_id = parts
 
-        # Read run manifest
+        # Construct gold manifest path deterministically
+        gold_manifest_path = (
+            f"gold/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/band_id={band_id}/product=signal_activity/manifest.json"
+        )
+
+        # Read gold manifest
         client = get_minio_client()
         bucket = bucket_name()
-        run_manifest_path = (
-            f"runs/mission_type={mission_type}/site={site}/sensor={sensor}/"
-            f"run_id={run_id}/run_manifest.json"
-        )
-        run_manifest = _read_manifest(client, bucket, run_manifest_path)
-        
-        if not run_manifest:
-            raise ValueError(f"Run manifest not found: {run_manifest_path}")
-        
-        # Get band info from run manifest
-        bands = run_manifest.get("bands", {})
-        band_info = bands.get(band_id)
-        if not band_info:
-            raise ValueError(f"Band {band_id} not found in run manifest")
-        
-        # Get holds axis for validation
-        holds_axis = band_info.get("axis", {})
-        if not holds_axis:
-            raise ValueError(f"Band {band_id} missing axis information in run manifest")
-        
-        # Get silver manifests for this band
-        silver_manifest_paths = band_info.get("silver_manifests", [])
-        if not silver_manifest_paths:
-            raise ValueError(f"No silver manifests found for band {band_id}")
-        
-        # Filter for signal_activity products
-        signal_activity_manifests = []
-        for manifest_path in silver_manifest_paths:
-            manifest = _read_manifest(client, bucket, manifest_path)
-            if manifest:
-                product_type = manifest.get("product_type")
-                status = manifest.get("status")
-                if product_type == "signal_activity" and status == "success":
-                    signal_activity_manifests.append(manifest)
-        
-        if not signal_activity_manifests:
-            raise ValueError(f"No signal_activity products found for band {band_id}")
-        
-        # Validate axis compatibility with first signal_activity product
-        first_sa_manifest = signal_activity_manifests[0]
-        sa_axis = {
-            "start_hz": first_sa_manifest.get("start_hz"),
-            "step_hz": first_sa_manifest.get("step_hz"),
-            "stop_hz": first_sa_manifest.get("stop_hz"),
-            "n_freqs": first_sa_manifest.get("n_freqs"),
-        }
-        
-        is_compatible, error_msg = validate_axis_compatibility(holds_axis, sa_axis)
-        if not is_compatible:
-            raise ValueError(
-                f"Axis mismatch between holds and signal_activity: {error_msg}. "
-                f"Holds axis: {holds_axis}, Signal activity axis: {sa_axis}"
-            )
-        
-        # Extract axis info (use from first manifest, all should be compatible)
-        start_hz = float(sa_axis["start_hz"])
-        step_hz = float(sa_axis["step_hz"])
-        n_freqs = int(sa_axis["n_freqs"])
-        
-        # Aggregate activity_fraction across all days using per-bin maximum
-        activity_arrays = []
+        gold_manifest = _read_manifest(client, bucket, gold_manifest_path)
+
+        if not gold_manifest:
+            raise ValueError(f"Gold signal_activity manifest not found: {gold_manifest_path}")
+
+        # Validate status
+        if gold_manifest.get("status") != "success":
+            raise ValueError(f"Gold signal_activity manifest status is not 'success': {gold_manifest_path}")
+
+        # Get data object path
+        data_object = gold_manifest.get("data_object")
+        if not data_object:
+            raise ValueError(f"Gold manifest missing data_object: {gold_manifest_path}")
+
+        # Extract metadata from manifest
+        start_hz = float(gold_manifest.get("start_hz", 0))
+        step_hz = float(gold_manifest.get("step_hz", 0))
+        n_freqs = int(gold_manifest.get("n_freqs", 0))
+        stop_hz = float(gold_manifest.get("stop_hz", 0))
+        band_label = gold_manifest.get("band_label", "")
+        n_traces_total = int(gold_manifest.get("n_traces_total", 0))
+
+        # Read parquet data using DuckDB
         con = get_connection()
-        
+        data_path = f"s3://{bucket}/{data_object}"
         try:
-            for manifest in signal_activity_manifests:
-                data_object = manifest.get("data_object")
-                if not data_object:
-                    continue
-                
-                # Read parquet data using DuckDB
-                data_path = f"s3://{bucket}/{data_object}"
-                try:
-                    table = con.execute(f"SELECT * FROM read_parquet('{data_path}')").fetch_arrow_table()
-                except Exception as e:
-                    # Skip this manifest if we can't read it
-                    continue
-                
-                # Extract activity_fraction array from single row
-                if table.num_rows != 1:
-                    continue
-                
-                activity_fraction_array = table["activity_fraction"][0]
-                activity_fraction = activity_fraction_array.values.to_numpy(zero_copy_only=False).astype(np.float32)
-                
-                if len(activity_fraction) == n_freqs:
-                    activity_arrays.append(activity_fraction)
-        
-        finally:
-            con.close()
-        
-        if not activity_arrays:
-            raise ValueError(f"Failed to read any signal_activity data for band {band_id}")
-        
-        # Compute per-bin maximum across all days
-        activity_arrays_stack = np.stack(activity_arrays, axis=0)  # Shape: (n_days, n_freqs)
-        activity_run = np.max(activity_arrays_stack, axis=0)  # Shape: (n_freqs,)
-        
-        # Generate frequency axis
+            table = con.execute(f"SELECT * FROM read_parquet('{data_path}')").fetch_arrow_table()
+        except Exception as e:
+            raise ValueError(f"Failed to read gold signal_activity parquet data: {e}")
+
+        # Extract arrays from single row
+        if table.num_rows != 1:
+            raise ValueError(f"Expected single row in gold parquet, got {table.num_rows}")
+
+        # Extract activity_fraction array from first (and only) row
+        activity_fraction_array = table["activity_fraction"][0]
+
+        # Convert FixedSizeList to numpy array
+        activity_run = activity_fraction_array.values.to_numpy(zero_copy_only=False).astype(np.float32)
+
+        # Build frequency axis using exact formula: freqs[i] = start_hz + i * step_hz
         freqs = np.array([start_hz + i * step_hz for i in range(n_freqs)], dtype=np.float64)
-        
-        # Extract metadata from first manifest (or aggregate summary stats)
-        threshold_method = first_sa_manifest.get("threshold_method", "unknown")
-        noise_percentile = first_sa_manifest.get("noise_percentile")
-        margin_db = first_sa_manifest.get("margin_db")
-        
-        # Compute summary statistics from aggregated activity
-        n_bins_active_gt0 = int(np.sum(activity_run > 0))
-        max_activity_fraction = float(np.max(activity_run))
-        p95_activity_fraction = float(np.percentile(activity_run, 95.0))
-        
+
+        # Extract metadata from gold manifest
+        threshold_method = gold_manifest.get("threshold_method", "unknown")
+        noise_percentile = gold_manifest.get("noise_percentile")
+        margin_db = gold_manifest.get("margin_db")
+        n_bins_active_gt0 = int(gold_manifest.get("n_bins_active_gt0", 0))
+        max_activity_fraction = float(gold_manifest.get("max_activity_fraction", 0.0))
+        p95_activity_fraction = float(gold_manifest.get("p95_activity_fraction", 0.0))
+
         metadata = {
             "threshold_method": threshold_method,
             "noise_percentile": noise_percentile,
@@ -586,7 +532,7 @@ class RfprocGoldSilverDataSource:
             "max_activity_fraction": max_activity_fraction,
             "p95_activity_fraction": p95_activity_fraction,
         }
-        
+
         return {
             "freqs": freqs.tolist(),
             "activity": activity_run.tolist(),
