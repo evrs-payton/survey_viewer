@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 
 from ..services.rfproc_data_source import RfprocGoldSilverDataSource
@@ -54,3 +55,85 @@ def get_holds(
         return _data_source.get_holds(survey_id, band_id, product_type="holds", max_points=max_points)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/survey/{survey_id}/band/{band_id}/signal-activity")
+def get_signal_activity(
+    survey_id: str,
+    band_id: str,
+) -> Dict:
+    """Get signal activity data for frontend.
+
+    Args:
+        survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
+        band_id: Band identifier (band_id string from run manifest)
+
+    Returns:
+        Signal activity data with freqs, activity, metadata
+    """
+    try:
+        return _data_source.get_signal_activity(survey_id, band_id)
+    except ValueError as e:
+        error_msg = str(e)
+        # Check if it's an axis mismatch error
+        if "axis mismatch" in error_msg.lower():
+            # Try to extract axis details for structured error
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "axis_mismatch",
+                    "message": error_msg,
+                }
+            )
+        # Check if it's a not found error
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
+@router.get("/survey/{survey_id}/band/{band_id}/signal-activity/regions")
+def get_signal_activity_regions(
+    survey_id: str,
+    band_id: str,
+    threshold: float = Query(default=0.05, ge=0.0, le=1.0, description="Activity threshold (0..1)"),
+) -> Dict:
+    """Get activity regions where activity >= threshold.
+
+    Args:
+        survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
+        band_id: Band identifier (band_id string from run manifest)
+        threshold: Activity threshold (0..1, default: 0.05)
+
+    Returns:
+        Dictionary with threshold and list of regions:
+        {
+            "threshold": float,
+            "regions": [{"start_hz": float, "stop_hz": float}, ...]
+        }
+    """
+    try:
+        # Get signal activity data
+        activity_data = _data_source.get_signal_activity(survey_id, band_id)
+        
+        # Extract regions
+        activity = np.array(activity_data["activity"])
+        freqs = np.array(activity_data["freqs"])
+        regions = _data_source._extract_activity_regions(activity, freqs, threshold)
+        
+        return {
+            "threshold": threshold,
+            "regions": regions,
+        }
+    except ValueError as e:
+        error_msg = str(e)
+        if "axis mismatch" in error_msg.lower():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "axis_mismatch",
+                    "message": error_msg,
+                }
+            )
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)

@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
-import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion } from '../../../lib/api';
+import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, getSignalActivity, getActivityRegions, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion, type SignalActivityResponse, type ActivityRegionsResponse } from '../../../lib/api';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -55,6 +55,15 @@ export default function SurveyBandDetailPage() {
   const [manualRegionLabel, setManualRegionLabel] = useState<string>('');
   const [highlightedManualRegionIndex, setHighlightedManualRegionIndex] = useState<number | null>(null);
   const [showManualRegionLabels, setShowManualRegionLabels] = useState<boolean>(false);
+
+  // Signal activity state
+  const [showSignalActivity, setShowSignalActivity] = useState<boolean>(false);
+  const [showActivityRegions, setShowActivityRegions] = useState<boolean>(false);
+  const [activityThreshold, setActivityThreshold] = useState<number>(0.05);
+  const [signalActivityData, setSignalActivityData] = useState<SignalActivityResponse | null>(null);
+  const [activityRegions, setActivityRegions] = useState<ActivityRegionsResponse | null>(null);
+  const [signalActivityLoading, setSignalActivityLoading] = useState<boolean>(false);
+  const [signalActivityError, setSignalActivityError] = useState<string | null>(null);
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
@@ -152,6 +161,61 @@ export default function SurveyBandDetailPage() {
       });
   }, [showManualRegions, holdsData, manualRegions, manualRegionsLoading, decodedSurveyId]);
 
+  // Reset signal activity when toggle is disabled or survey/band changes
+  useEffect(() => {
+    if (!showSignalActivity || !holdsData) {
+      setSignalActivityData(null);
+      setActivityRegions(null);
+      setSignalActivityLoading(false);
+      setSignalActivityError(null);
+    }
+  }, [showSignalActivity, holdsData, decodedSurveyId, decodedBandId]);
+
+  // Fetch signal activity when toggle is enabled
+  useEffect(() => {
+    if (!showSignalActivity || !holdsData || signalActivityData !== null || signalActivityLoading) return;
+
+    setSignalActivityLoading(true);
+    setSignalActivityError(null);
+    getSignalActivity(decodedSurveyId, decodedBandId)
+      .then((data) => {
+        setSignalActivityData(data);
+        setSignalActivityLoading(false);
+      })
+      .catch((err: any) => {
+        console.error('Failed to load signal activity:', err);
+        const errorMsg = err?.message ?? 'Failed to load signal activity';
+        setSignalActivityError(errorMsg);
+        setSignalActivityLoading(false);
+        // Check if it's an axis mismatch error
+        if (errorMsg.toLowerCase().includes('axis mismatch')) {
+          setShowSignalActivity(false);
+          setShowActivityRegions(false);
+        }
+      });
+  }, [showSignalActivity, holdsData, signalActivityData, signalActivityLoading, decodedSurveyId, decodedBandId]);
+
+  // Fetch activity regions when threshold changes (debounced)
+  useEffect(() => {
+    if (!showActivityRegions || !signalActivityData) {
+      setActivityRegions(null);
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      getActivityRegions(decodedSurveyId, decodedBandId, activityThreshold)
+        .then((data) => {
+          setActivityRegions(data);
+        })
+        .catch((err: any) => {
+          console.error('Failed to load activity regions:', err);
+          setActivityRegions(null);
+        });
+    }, 200); // Debounce 200ms
+
+    return () => clearTimeout(timeoutId);
+  }, [showActivityRegions, signalActivityData, activityThreshold, decodedSurveyId, decodedBandId]);
+
   const traces = useMemo<PlotData[]>(() => {
     if (!holdsData) return [];
 
@@ -160,7 +224,25 @@ export default function SurveyBandDetailPage() {
     const maxHold = holdsData.max_hold;
     const avgHold = holdsData.avg_hold;
 
-    return [
+    const traces: PlotData[] = [];
+
+    // Add heatmap trace first (renders behind lines)
+    if (showSignalActivity && signalActivityData) {
+      traces.push({
+        x: signalActivityData.freqs.map((f) => f / 1e6), // Convert to MHz
+        z: [signalActivityData.activity], // Single row
+        type: 'heatmap',
+        colorscale: 'Viridis',
+        showscale: false,
+        opacity: 0.3,
+        hoverinfo: 'x+z',
+        hovertemplate: 'Frequency: %{x:.3f} MHz<br>Activity: %{z:.1%}<extra></extra>',
+        zorder: 0, // Behind line traces
+      } as PlotData);
+    }
+
+    // Add hold line traces
+    traces.push(
       {
         x: freqsMHz,
         y: avgHold,
@@ -187,9 +269,11 @@ export default function SurveyBandDetailPage() {
         name: 'Min',
         line: { color: '#ff6b6b', width: 1.5 },
         hoverinfo: 'x+y+name',
-      },
-    ];
-  }, [holdsData]);
+      }
+    );
+
+    return traces;
+  }, [holdsData, showSignalActivity, signalActivityData]);
 
   // Filter overlays based on filterText
   const filteredOverlays = useMemo(() => {
@@ -278,7 +362,25 @@ export default function SurveyBandDetailPage() {
       layer: 'above' as const,
     } as any] : [];
 
-    const shapes = [...assignmentShapes, ...manualRegionShapes, ...editingShape];
+    // Create activity region shapes if activity regions are enabled and available
+    const activityRegionShapes = showActivityRegions && activityRegions && activityRegions.regions.length > 0
+      ? activityRegions.regions.map(region => ({
+          type: 'rect' as const,
+          xref: 'x' as const,
+          yref: 'paper' as const,
+          x0: region.start_hz / 1e6,
+          x1: region.stop_hz / 1e6,
+          y0: 0,
+          y1: 1,
+          line: { width: 0 },
+          fillcolor: 'rgba(255, 100, 100, 0.2)',  // Light red
+          opacity: 0.3,
+          hoverinfo: 'skip' as const,
+          layer: 'below' as const,  // Behind other shapes
+        } as any))
+      : [];
+
+    const shapes = [...assignmentShapes, ...manualRegionShapes, ...activityRegionShapes, ...editingShape];
 
     // Create label annotations with less strict de-cluttering
     const annotations: any[] = [];
@@ -402,7 +504,22 @@ export default function SurveyBandDetailPage() {
         automargin: true,
       },
       shapes,
-      annotations: annotations.length > 0 ? annotations : [],
+      annotations: [
+        ...annotations,
+        ...(showActivityRegions && activityRegions ? [{
+          x: 0.02,
+          y: 0.98,
+          text: `Activity regions: threshold ${(activityRegions.threshold * 100).toFixed(1)}%`,
+          showarrow: false,
+          xref: 'paper',
+          yref: 'paper',
+          font: { color: '#f7f7f7', size: 10 },
+          bgcolor: 'rgba(0,0,0,0.7)',
+          bordercolor: 'rgba(255,100,100,0.5)',
+          borderwidth: 1,
+          borderpad: 4,
+        }] : []),
+      ],
       showlegend: true,
       legend: {
         orientation: 'h',
@@ -413,7 +530,7 @@ export default function SurveyBandDetailPage() {
         bgcolor: 'rgba(0,0,0,0)',
       },
     };
-  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode, editingRegion]);
+  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode, editingRegion, showSignalActivity, showActivityRegions, activityRegions]);
 
   // Handle box selection for manual region creation
   const handlePlotSelected = useCallback((eventData: any) => {
@@ -698,6 +815,73 @@ export default function SurveyBandDetailPage() {
             <div style={{ marginLeft: '1.5rem', color: '#ffcc00', fontSize: '0.9rem' }}>
               Selection mode active: Click and drag on the chart to select a region
             </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input
+              type="checkbox"
+              id="show-signal-activity"
+              checked={showSignalActivity}
+              onChange={(e) => setShowSignalActivity(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <label htmlFor="show-signal-activity" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+              Signal activity
+            </label>
+            {signalActivityLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
+            {signalActivityError && (
+              <span style={{ color: '#ff6b6b', fontSize: '0.9rem' }}>
+                Error: {signalActivityError}
+              </span>
+            )}
+          </div>
+          {showSignalActivity && signalActivityData && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+                <input
+                  type="checkbox"
+                  id="show-activity-regions"
+                  checked={showActivityRegions}
+                  onChange={(e) => setShowActivityRegions(e.target.checked)}
+                  disabled={!showSignalActivity}
+                  style={{ cursor: showSignalActivity ? 'pointer' : 'not-allowed' }}
+                />
+                <label 
+                  htmlFor="show-activity-regions" 
+                  style={{ 
+                    color: showSignalActivity ? '#f7f7f7' : '#666', 
+                    cursor: showSignalActivity ? 'pointer' : 'not-allowed' 
+                  }}
+                >
+                  Show activity regions
+                </label>
+              </div>
+              {showActivityRegions && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem', flexWrap: 'wrap' }}>
+                  <label 
+                    htmlFor="activity-threshold" 
+                    style={{ color: '#f7f7f7', fontSize: '0.9rem', minWidth: '100px' }}
+                  >
+                    Threshold: {(activityThreshold * 100).toFixed(1)}%
+                  </label>
+                  <input
+                    type="range"
+                    id="activity-threshold"
+                    min="0"
+                    max="0.5"
+                    step="0.01"
+                    value={activityThreshold}
+                    onChange={(e) => setActivityThreshold(parseFloat(e.target.value))}
+                    disabled={!showActivityRegions}
+                    style={{ 
+                      flex: '1', 
+                      minWidth: '200px',
+                      cursor: showActivityRegions ? 'pointer' : 'not-allowed',
+                      opacity: showActivityRegions ? 1 : 0.5,
+                    }}
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
         {traces.length > 0 && (

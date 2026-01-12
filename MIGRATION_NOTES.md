@@ -148,3 +148,64 @@ This approach scales well because:
 - Band listing reads one run manifest per survey (moderate cost)
 - Gold data is only read when user requests it (expensive operation, but on-demand)
 
+## Signal Activity Overlay
+
+The signal activity visualization feature provides two capabilities:
+
+1. **Heat underlay**: A frequency heatmap displayed behind hold lines showing `activity_fraction` (0..1) per frequency bin
+2. **Threshold regions**: Shaded vertical spans where activity >= user-controlled threshold
+
+### Data Source
+
+Signal activity data is aggregated from silver products (`product=signal_activity`) per band. The aggregation method uses **per-bin maximum** across all days in the run:
+
+- For each frequency bin `i`: `activity_run[i] = max(activity_fraction[i])` across all days
+- This shows the peak activity per frequency bin across the entire run
+
+### Backend Implementation
+
+**Endpoints**:
+- `GET /bands/survey/{survey_id}/band/{band_id}/signal-activity` - Returns aggregated signal activity data
+- `GET /bands/survey/{survey_id}/band/{band_id}/signal-activity/regions?threshold=0.05` - Returns thresholded regions
+
+**Service Method**: `RfprocGoldSilverDataSource.get_signal_activity()`
+- Discovers silver signal_activity products from run manifest
+- Validates axis compatibility with holds axis (using `validate_axis_compatibility()`)
+- Aggregates using per-bin maximum
+- Returns: `{freqs: List[float], activity: List[float], metadata: Dict}`
+
+**Region Extraction**: `_extract_activity_regions()`
+- Input: `activity[]`, `freqs[]`, `threshold` (0..1)
+- Output: Contiguous frequency spans where `activity >= threshold`
+- Merges adjacent/overlapping bins into clean spans
+
+**Error Handling**:
+- Axis mismatch: Returns 422 with structured error `{error: "axis_mismatch", message: "..."}`
+- No products found: Returns 404
+- Other errors: Returns 400 with error message
+
+### Frontend Implementation
+
+**UI Controls** (all off by default):
+- Toggle: "Signal activity" - Enables/disables heatmap underlay
+- Toggle: "Show activity regions" - Enables/disables threshold regions (disabled if signal activity is off)
+- Slider: Threshold (0..0.5, default 0.05, step 0.01) - Controls region threshold (disabled if regions are off)
+
+**Visualization**:
+- **Heatmap**: Single-row Plotly heatmap trace with:
+  - `zorder: 0` (renders behind line traces)
+  - `opacity: 0.3`
+  - `colorscale: 'Viridis'`
+  - Tooltip shows frequency and activity percentage
+- **Regions**: Vertical rectangles (`layout.shapes`) with:
+  - `layer: 'below'` (renders behind assignment/manual region shapes)
+  - Light red fill (`rgba(255, 100, 100, 0.2)`)
+  - Legend annotation: "Activity regions: threshold X%"
+
+**Performance**:
+- Signal activity data is cached per band (only fetched once when toggle is enabled)
+- Threshold slider changes are debounced (200ms) before fetching regions
+- Regions are only fetched if signal activity data is already loaded
+
+**Default State**: All features are **off by default** to ensure zero behavior change for existing users.
+

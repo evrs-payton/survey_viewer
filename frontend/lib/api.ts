@@ -89,6 +89,27 @@ export interface ManualRegion {
   created_at_utc: string | null;
 }
 
+export interface SignalActivityResponse {
+  freqs: number[];
+  activity: number[];  // 0..1
+  metadata: {
+    threshold_method: string;
+    noise_percentile?: number;
+    margin_db?: number;
+    n_bins_active_gt0: number;
+    max_activity_fraction: number;
+    p95_activity_fraction: number;
+  };
+}
+
+export interface ActivityRegionsResponse {
+  threshold: number;
+  regions: Array<{
+    start_hz: number;
+    stop_hz: number;
+  }>;
+}
+
 export async function listSurveys(): Promise<SurveyInfo[]> {
   return fetchJSON<SurveyInfo[]>('/bands/surveys');
 }
@@ -219,4 +240,29 @@ export async function deleteManualRegion(id: string): Promise<void> {
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
+}
+
+export async function getSignalActivity(
+  surveyId: string,
+  bandId: string
+): Promise<SignalActivityResponse> {
+  const encodedSurveyId = encodeURIComponent(surveyId);
+  const encodedBandId = encodeURIComponent(bandId);
+  return fetchJSON<SignalActivityResponse>(
+    `/bands/survey/${encodedSurveyId}/band/${encodedBandId}/signal-activity`
+  );
+}
+
+export async function getActivityRegions(
+  surveyId: string,
+  bandId: string,
+  threshold: number
+): Promise<ActivityRegionsResponse> {
+  const encodedSurveyId = encodeURIComponent(surveyId);
+  const encodedBandId = encodeURIComponent(bandId);
+  const query = new URLSearchParams();
+  query.set('threshold', threshold.toString());
+  return fetchJSON<ActivityRegionsResponse>(
+    `/bands/survey/${encodedSurveyId}/band/${encodedBandId}/signal-activity/regions?${query.toString()}`
+  );
 }
