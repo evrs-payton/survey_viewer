@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 
 from ..services.rfproc_data_source import RfprocGoldSilverDataSource
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bands", tags=["bands"])
 
@@ -54,7 +57,11 @@ def get_holds(
     try:
         return _data_source.get_holds(survey_id, band_id, product_type="holds", max_points=max_points)
     except ValueError as e:
+        logger.error(f"Error getting holds for survey_id={survey_id}, band_id={band_id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception(f"Unexpected error getting holds for survey_id={survey_id}, band_id={band_id}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/survey/{survey_id}/band/{band_id}/signal-activity")
@@ -75,6 +82,7 @@ def get_signal_activity(
         return _data_source.get_signal_activity(survey_id, band_id)
     except ValueError as e:
         error_msg = str(e)
+        logger.error(f"Error getting signal activity for survey_id={survey_id}, band_id={band_id}: {error_msg}")
         # Check if it's an axis mismatch error
         if "axis mismatch" in error_msg.lower():
             # Try to extract axis details for structured error
@@ -89,6 +97,9 @@ def get_signal_activity(
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        logger.exception(f"Unexpected error getting signal activity for survey_id={survey_id}, band_id={band_id}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/survey/{survey_id}/band/{band_id}/signal-activity/regions")
@@ -126,6 +137,7 @@ def get_signal_activity_regions(
         }
     except ValueError as e:
         error_msg = str(e)
+        logger.error(f"Error getting signal activity regions for survey_id={survey_id}, band_id={band_id}, threshold={threshold}: {error_msg}")
         if "axis mismatch" in error_msg.lower():
             raise HTTPException(
                 status_code=422,
@@ -137,3 +149,6 @@ def get_signal_activity_regions(
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        logger.exception(f"Unexpected error getting signal activity regions for survey_id={survey_id}, band_id={band_id}, threshold={threshold}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

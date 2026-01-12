@@ -228,9 +228,35 @@ export default function SurveyBandDetailPage() {
 
     // Add heatmap trace first (renders behind lines)
     if (showSignalActivity && signalActivityData) {
+      // Create a heatmap that spans the y-axis by using y values from the power data range
+      const activityFreqsMHz = signalActivityData.freqs.map((f) => f / 1e6);
+      const activityValues = signalActivityData.activity;
+      
+      // Calculate y-axis range from holds data to span the full plot height
+      const allPowerValues = [...minHold, ...maxHold, ...avgHold].filter(v => !isNaN(v) && isFinite(v));
+      const yMin = Math.min(...allPowerValues);
+      const yMax = Math.max(...allPowerValues);
+      const yRange = yMax - yMin;
+      
+      // Create y values that span the power range (use enough points for smooth rendering)
+      // Use a reasonable number of rows (e.g., 20) to create a smooth vertical gradient
+      const numYRows = 20;
+      const yValues: number[] = [];
+      for (let i = 0; i < numYRows; i++) {
+        yValues.push(yMin + (yRange * i) / (numYRows - 1));
+      }
+      
+      // Create a 2D z array by repeating the activity values for each y row
+      // This creates a vertical band with the same activity pattern at all y levels
+      const zData: number[][] = [];
+      for (let i = 0; i < numYRows; i++) {
+        zData.push(activityValues);
+      }
+      
       traces.push({
-        x: signalActivityData.freqs.map((f) => f / 1e6), // Convert to MHz
-        z: [signalActivityData.activity], // Single row
+        x: activityFreqsMHz,
+        y: yValues,
+        z: zData,
         type: 'heatmap',
         colorscale: 'Viridis',
         showscale: false,
