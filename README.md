@@ -19,6 +19,11 @@ The FastAPI backend exposes the following endpoints:
 - `GET /api/assignments/overlay?site={site}&band_start_hz={start}&band_stop_hz={stop}&valid_on={date}` – get assignment overlays for a frequency band
   - Query parameters: `site` (required), `band_start_hz` (required, Hz as integer), `band_stop_hz` (required, Hz as integer), `valid_on` (optional, YYYY-MM-DD)
   - Returns: JSON array of assignment overlay records
+- `GET /signals/candidates?site={site}&mission_type={mission_type}&sensor={sensor}&run_id={run_id}&band_id={band_id}` – get signal candidates for a band
+  - Query parameters: `site` (required), `mission_type` (required), `sensor` (required), `run_id` (required), `band_id` (required)
+  - Optional filters: `min_activity_peak` (float, minimum activity_peak), `min_obw_hz` (float, minimum OBW in Hz), `max_candidates` (int, maximum number of candidates to return)
+  - Returns: JSON array of candidate objects with fields: `center_freq_hz`, `f_low_99_hz`, `f_high_99_hz`, `activity_peak`, `activity_mean`, `peak_dbm` (optional)
+  - Gold product path: `gold/mission_type={mission_type}/site={site}/sensor={sensor}/run_id={run_id}/band_id={band_id}/product=signal_candidates/`
 
 Survey ID format: `{mission_type}:{site}:{sensor}:{run_id}` (e.g., `survey:Lask:CRFS:run01`)
 
@@ -153,3 +158,12 @@ The viewer reads gold holds data from rfproc-generated parquet files stored in M
 - Only run manifests with `status="success"` are included
 
 The `/bands/survey/{survey_id}/band/{band_id}/holds` endpoint supports an optional `max_points` query parameter (recommended: 50000) to downsample large arrays for better performance.
+
+### Signal Candidates
+
+The viewer also supports visualization of signal candidates from the rfproc gold product:
+
+- Gold product path: `gold/mission_type={mission_type}/site={site}/sensor={sensor}/run_id={run_id}/band_id={band_id}/product=signal_candidates/data.parquet`
+- Manifest path: `gold/mission_type={mission_type}/site={site}/sensor={sensor}/run_id={run_id}/band_id={band_id}/product=signal_candidates/manifest.json`
+- Parquet schema: One row per candidate with fields including `center_freq_hz`, `f_low_99_hz`, `f_high_99_hz`, `activity_peak`, `activity_mean`, and optional `peak_dbm`
+- The `/signals/candidates` endpoint reads the parquet file and returns a filtered list of candidates sorted by `center_freq_hz`

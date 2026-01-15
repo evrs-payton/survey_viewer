@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
-import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, getSignalActivity, getActivityRegions, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion, type SignalActivityResponse, type ActivityRegionsResponse } from '../../../lib/api';
+import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, getSignalActivity, getActivityRegions, getSignalCandidates, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion, type SignalActivityResponse, type ActivityRegionsResponse, type SignalCandidate } from '../../../lib/api';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -64,6 +64,14 @@ export default function SurveyBandDetailPage() {
   const [activityRegions, setActivityRegions] = useState<ActivityRegionsResponse | null>(null);
   const [signalActivityLoading, setSignalActivityLoading] = useState<boolean>(false);
   const [signalActivityError, setSignalActivityError] = useState<string | null>(null);
+
+  // Signal candidates state
+  const [showSignalCandidates, setShowSignalCandidates] = useState<boolean>(false);
+  const [showCandidateLabels, setShowCandidateLabels] = useState<boolean>(false);
+  const [signalCandidates, setSignalCandidates] = useState<SignalCandidate[] | null>(null);
+  const [signalCandidatesLoading, setSignalCandidatesLoading] = useState<boolean>(false);
+  const [signalCandidatesError, setSignalCandidatesError] = useState<string | null>(null);
+  const [highlightedCandidateIndex, setHighlightedCandidateIndex] = useState<number | null>(null);
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
@@ -216,6 +224,45 @@ export default function SurveyBandDetailPage() {
     return () => clearTimeout(timeoutId);
   }, [showActivityRegions, signalActivityData, activityThreshold, decodedSurveyId, decodedBandId]);
 
+  // Reset signal candidates when toggle is disabled or survey/band changes
+  useEffect(() => {
+    if (!showSignalCandidates || !holdsData) {
+      setSignalCandidates(null);
+      setSignalCandidatesLoading(false);
+      setSignalCandidatesError(null);
+    }
+  }, [showSignalCandidates, holdsData, decodedSurveyId, decodedBandId]);
+
+  // Fetch signal candidates when toggle is enabled
+  useEffect(() => {
+    if (!showSignalCandidates || !holdsData || signalCandidates !== null || signalCandidatesLoading) return;
+
+    // Extract params from survey_id (format: mission_type:site:sensor:run_id)
+    const parts = decodedSurveyId.split(':');
+    if (parts.length !== 4) {
+      setSignalCandidatesError('Invalid survey_id format');
+      setSignalCandidatesLoading(false);
+      return;
+    }
+
+    const [missionType, site, sensor, runId] = parts;
+
+    setSignalCandidatesLoading(true);
+    setSignalCandidatesError(null);
+    getSignalCandidates(site, missionType, sensor, runId, decodedBandId)
+      .then((data) => {
+        setSignalCandidates(data);
+        setSignalCandidatesLoading(false);
+      })
+      .catch((err: any) => {
+        console.error('Failed to load signal candidates:', err);
+        const errorMsg = err?.message ?? 'Failed to load signal candidates';
+        setSignalCandidatesError(errorMsg);
+        setSignalCandidatesLoading(false);
+        setSignalCandidates([]);
+      });
+  }, [showSignalCandidates, holdsData, signalCandidates, signalCandidatesLoading, decodedSurveyId, decodedBandId]);
+
   const traces = useMemo<PlotData[]>(() => {
     if (!holdsData) return [];
 
@@ -298,8 +345,29 @@ export default function SurveyBandDetailPage() {
       }
     );
 
+    // Add candidate center frequency markers if signal candidates are enabled
+    if (showSignalCandidates && signalCandidates && signalCandidates.length > 0 && holdsData) {
+      // Calculate y-axis range from holds data
+      const allPowerValues = [...minHold, ...maxHold, ...avgHold].filter(v => !isNaN(v) && isFinite(v));
+      const yMin = Math.min(...allPowerValues);
+      const yMax = Math.max(...allPowerValues);
+      
+      signalCandidates.forEach((candidate, idx) => {
+        const isHighlighted = highlightedCandidateIndex === idx;
+        traces.push({
+          x: [candidate.center_freq_hz / 1e6, candidate.center_freq_hz / 1e6],
+          y: [yMin, yMax],
+          type: 'scatter',
+          mode: 'lines',
+          line: { color: isHighlighted ? '#00ff00' : 'rgba(0, 255, 0, 0.6)', width: 1 },
+          showlegend: false,
+          hoverinfo: 'skip',
+        } as PlotData);
+      });
+    }
+
     return traces;
-  }, [holdsData, showSignalActivity, signalActivityData]);
+  }, [holdsData, showSignalActivity, signalActivityData, showSignalCandidates, signalCandidates, highlightedCandidateIndex]);
 
   // Filter overlays based on filterText
   const filteredOverlays = useMemo(() => {
@@ -406,7 +474,29 @@ export default function SurveyBandDetailPage() {
         } as any))
       : [];
 
-    const shapes = [...assignmentShapes, ...manualRegionShapes, ...activityRegionShapes, ...editingShape];
+    // Create candidate OBW spans if signal candidates are enabled and available
+    const candidateShapes = showSignalCandidates && signalCandidates && signalCandidates.length > 0
+      ? signalCandidates.map((candidate, idx) => {
+          const isHighlighted = highlightedCandidateIndex === idx;
+          return {
+            type: 'rect' as const,
+            xref: 'x' as const,
+            yref: 'paper' as const,
+            x0: candidate.f_low_99_hz / 1e6,  // Convert to MHz
+            x1: candidate.f_high_99_hz / 1e6,
+            y0: 0,
+            y1: 1,
+            line: { width: isHighlighted ? 2 : 0, color: isHighlighted ? '#00ff00' : 'rgba(0, 255, 0, 0.3)' },
+            fillcolor: 'rgba(0, 255, 0, 0.2)',  // Light green
+            opacity: isHighlighted ? 0.5 : 0.2,
+            layer: 'below' as const,  // Below holds lines, above activity heat
+            hoverinfo: 'skip' as const,
+          } as any;
+        })
+      : [];
+
+    // Layering order: activity regions (bottom) -> candidate spans -> manual regions -> assignments -> editing shape
+    const shapes = [...activityRegionShapes, ...candidateShapes, ...manualRegionShapes, ...assignmentShapes, ...editingShape];
 
     // Create label annotations with less strict de-cluttering
     const annotations: any[] = [];
@@ -503,6 +593,37 @@ export default function SurveyBandDetailPage() {
       }
     }
 
+    // Create candidate label annotations
+    if (showCandidateLabels && showSignalCandidates && signalCandidates && signalCandidates.length > 0 && metadata) {
+      const startHz = metadata.start_hz;
+      const stopHz = metadata.stop_hz;
+      
+      if (startHz !== null && startHz !== undefined && stopHz !== null && stopHz !== undefined) {
+        signalCandidates.forEach((candidate) => {
+          const centerMHz = candidate.center_freq_hz / 1e6;
+          const obwMHz = (candidate.f_high_99_hz - candidate.f_low_99_hz) / 1e6;
+          
+          // Calculate y position from power data range
+          const allPowerValues = holdsData ? [...holdsData.min_hold, ...holdsData.max_hold, ...holdsData.avg_hold].filter(v => !isNaN(v) && isFinite(v)) : [];
+          const yMax = allPowerValues.length > 0 ? Math.max(...allPowerValues) : 0;
+          
+          annotations.push({
+            x: centerMHz,
+            y: yMax * 0.95, // Position near top of chart
+            text: `${centerMHz.toFixed(3)} MHz<br>OBW: ${obwMHz.toFixed(3)} MHz`,
+            showarrow: false,
+            xref: 'x',
+            yref: 'y',
+            font: { color: '#f7f7f7', size: 10 },
+            bgcolor: 'rgba(255, 255, 255, 0.8)',
+            bordercolor: 'rgba(0, 255, 0, 0.5)',
+            borderwidth: 1,
+            borderpad: 2,
+          });
+        });
+      }
+    }
+
     return {
       title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
       dragmode: addRegionMode ? 'select' : 'zoom',
@@ -556,7 +677,7 @@ export default function SurveyBandDetailPage() {
         bgcolor: 'rgba(0,0,0,0)',
       },
     };
-  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode, editingRegion, showSignalActivity, showActivityRegions, activityRegions]);
+  }, [holdsData, band_id, zoomRange, showOverlays, filteredOverlays, showLabels, highlightedIndex, showManualRegions, manualRegions, showManualRegionLabels, highlightedManualRegionIndex, addRegionMode, editingRegion, showSignalActivity, showActivityRegions, activityRegions, showSignalCandidates, signalCandidates, showCandidateLabels, highlightedCandidateIndex]);
 
   // Handle box selection for manual region creation
   const handlePlotSelected = useCallback((eventData: any) => {
@@ -688,6 +809,29 @@ export default function SurveyBandDetailPage() {
       alert(`Failed to delete manual region: ${err?.message || 'Unknown error'}`);
     }
   }, [holdsData, decodedSurveyId]);
+
+  // Handle chart click to detect candidate span clicks
+  const handlePlotClick = useCallback((eventData: any) => {
+    if (!showSignalCandidates || !signalCandidates || signalCandidates.length === 0) return;
+    
+    // Get click coordinates from Plotly event
+    if (eventData?.points && eventData.points.length > 0) {
+      const point = eventData.points[0];
+      const clickXMHz = point.x;
+      
+      // Find candidate that contains this x coordinate
+      const clickedCandidateIndex = signalCandidates.findIndex(candidate => {
+        const startMHz = candidate.f_low_99_hz / 1e6;
+        const stopMHz = candidate.f_high_99_hz / 1e6;
+        return clickXMHz >= startMHz && clickXMHz <= stopMHz;
+      });
+      
+      if (clickedCandidateIndex !== -1) {
+        setHighlightedCandidateIndex(clickedCandidateIndex);
+        // Scroll table to that row if needed (table will auto-highlight via onMouseEnter)
+      }
+    }
+  }, [showSignalCandidates, signalCandidates]);
 
 
   if (!survey_id || !band_id) {
@@ -909,6 +1053,45 @@ export default function SurveyBandDetailPage() {
               )}
             </>
           )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input
+              type="checkbox"
+              id="show-signal-candidates"
+              checked={showSignalCandidates}
+              onChange={(e) => setShowSignalCandidates(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <label htmlFor="show-signal-candidates" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
+              Signal Candidates
+            </label>
+            {signalCandidatesLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
+            {signalCandidatesError && (
+              <span style={{ color: '#ff6b6b', fontSize: '0.9rem' }}>
+                Error: {signalCandidatesError}
+              </span>
+            )}
+          </div>
+          {showSignalCandidates && signalCandidates && signalCandidates.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+              <input
+                type="checkbox"
+                id="show-candidate-labels"
+                checked={showCandidateLabels}
+                onChange={(e) => setShowCandidateLabels(e.target.checked)}
+                disabled={!showSignalCandidates}
+                style={{ cursor: showSignalCandidates ? 'pointer' : 'not-allowed' }}
+              />
+              <label 
+                htmlFor="show-candidate-labels" 
+                style={{ 
+                  color: showSignalCandidates ? '#f7f7f7' : '#666', 
+                  cursor: showSignalCandidates ? 'pointer' : 'not-allowed' 
+                }}
+              >
+                Show candidate labels
+              </label>
+            </div>
+          )}
         </div>
         {traces.length > 0 && (
           <div style={{ position: 'relative' }}>
@@ -924,6 +1107,7 @@ export default function SurveyBandDetailPage() {
               }}
               onRelayout={handleRelayout}
               onSelected={handlePlotSelected}
+              onClick={handlePlotClick}
             />
             {editingRegion && (
               <div
@@ -1275,6 +1459,76 @@ export default function SurveyBandDetailPage() {
           ) : (
             <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>
               No manual regions yet. Click "Add Manual Region" to create one.
+            </p>
+          )}
+        </section>
+      )}
+
+      {/* Signal Candidates Panel */}
+      {showSignalCandidates && (
+        <section style={{ margin: '2rem 0', padding: '1rem', background: '#0f1320', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <h2 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.25rem' }}>Signal Candidates</h2>
+          
+          {signalCandidatesLoading ? (
+            <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>Loading candidates...</p>
+          ) : signalCandidatesError ? (
+            <p style={{ color: '#ff6b6b', marginTop: '1rem' }}>Error: {signalCandidatesError}</p>
+          ) : signalCandidates && signalCandidates.length > 0 ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', color: '#f7f7f7', fontSize: '0.9rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Center (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>OBW99 (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Activity Peak</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Activity Mean</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Peak dBm</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Start (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Stop (MHz)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {signalCandidates.map((candidate, idx) => {
+                    const isHighlighted = highlightedCandidateIndex === idx;
+                    const centerMHz = candidate.center_freq_hz / 1e6;
+                    const obwMHz = (candidate.f_high_99_hz - candidate.f_low_99_hz) / 1e6;
+                    const startMHz = candidate.f_low_99_hz / 1e6;
+                    const stopMHz = candidate.f_high_99_hz / 1e6;
+                    
+                    return (
+                      <tr
+                        key={idx}
+                        onMouseEnter={() => setHighlightedCandidateIndex(idx)}
+                        onMouseLeave={() => setHighlightedCandidateIndex(null)}
+                        onClick={() => {
+                          setHighlightedCandidateIndex(highlightedCandidateIndex === idx ? null : idx);
+                          // Zoom to OBW span with ~10% padding
+                          const padding = obwMHz * 0.1;
+                          setZoomRange([(startMHz - padding), (stopMHz + padding)]);
+                        }}
+                        style={{
+                          borderBottom: '1px solid rgba(255,255,255,0.05)',
+                          cursor: 'pointer',
+                          backgroundColor: isHighlighted ? 'rgba(0, 255, 0, 0.2)' : 'transparent',
+                          transition: 'background-color 0.15s ease',
+                        }}
+                      >
+                        <td style={{ padding: '0.75rem' }}>{centerMHz.toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>{obwMHz.toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>{candidate.activity_peak.toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>{candidate.activity_mean.toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>{candidate.peak_dbm !== undefined && candidate.peak_dbm !== null ? candidate.peak_dbm.toFixed(1) : 'N/A'}</td>
+                        <td style={{ padding: '0.75rem' }}>{startMHz.toFixed(3)}</td>
+                        <td style={{ padding: '0.75rem' }}>{stopMHz.toFixed(3)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>
+              No signal candidates found.
             </p>
           )}
         </section>

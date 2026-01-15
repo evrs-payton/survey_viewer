@@ -539,3 +539,126 @@ class RfprocGoldSilverDataSource:
             "metadata": metadata,
         }
 
+    def get_signal_candidates(
+        self,
+        survey_id: str,
+        band_id: str,
+        min_activity_peak: Optional[float] = None,
+        min_obw_hz: Optional[float] = None,
+        max_candidates: Optional[int] = None,
+    ) -> List[Dict]:
+        """Get signal candidates for a band from gold product.
+        
+        Reads signal_candidates parquet file (one row per candidate) and returns
+        filtered list of candidates with JSON-safe types.
+        
+        Args:
+            survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
+            band_id: Band identifier (band_id string from run manifest)
+            min_activity_peak: Optional minimum activity_peak filter (inclusive)
+            min_obw_hz: Optional minimum OBW in Hz filter (inclusive)
+            max_candidates: Optional maximum number of candidates to return (after filtering, sorted by center_freq_hz)
+        
+        Returns:
+            List of candidate dictionaries with fields:
+            - center_freq_hz: float
+            - f_low_99_hz: float
+            - f_high_99_hz: float
+            - activity_peak: float
+            - activity_mean: float
+            - peak_dbm: float | None (optional field)
+            - Other fields from parquet schema as needed
+        
+        Raises:
+            ValueError: If survey_id format is invalid, gold manifest not found,
+                        or gold product status is not success
+        """
+        # Parse survey_id
+        parts = survey_id.split(":")
+        if len(parts) != 4:
+            raise ValueError(f"Invalid survey_id format: {survey_id} (expected 'mission_type:site:sensor:run_id')")
+        mission_type, site, sensor, run_id = parts
+
+        # Construct gold manifest path deterministically
+        gold_manifest_path = (
+            f"gold/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/band_id={band_id}/product=signal_candidates/manifest.json"
+        )
+
+        # Read gold manifest
+        client = get_minio_client()
+        bucket = bucket_name()
+        gold_manifest = _read_manifest(client, bucket, gold_manifest_path)
+
+        if not gold_manifest:
+            raise ValueError(f"Gold signal_candidates manifest not found: {gold_manifest_path}")
+
+        # Validate status
+        if gold_manifest.get("status") != "success":
+            raise ValueError(f"Gold signal_candidates manifest status is not 'success': {gold_manifest_path}")
+
+        # Get data object path
+        data_object = gold_manifest.get("data_object")
+        if not data_object:
+            raise ValueError(f"Gold manifest missing data_object: {gold_manifest_path}")
+
+        # Read parquet data using DuckDB
+        con = get_connection()
+        data_path = f"s3://{bucket}/{data_object}"
+        try:
+            table = con.execute(f"SELECT * FROM read_parquet('{data_path}')").fetch_arrow_table()
+        except Exception as e:
+            raise ValueError(f"Failed to read gold signal_candidates parquet data: {e}")
+
+        # Convert Arrow table to list of dicts (one per candidate row)
+        candidates = []
+        for i in range(table.num_rows):
+            row_dict = {}
+            for col_name in table.column_names:
+                col = table[col_name]
+                value = col[i].as_py()  # Convert to Python native type
+                
+                # Handle None values
+                if value is None:
+                    row_dict[col_name] = None
+                    continue
+                
+                # Convert numpy/pandas types to JSON-safe Python types
+                if isinstance(value, (np.integer, np.int64, np.int32)):
+                    row_dict[col_name] = int(value)
+                elif isinstance(value, (np.floating, np.float64, np.float32)):
+                    row_dict[col_name] = float(value)
+                elif isinstance(value, (np.bool_, bool)):
+                    row_dict[col_name] = bool(value)
+                else:
+                    # For strings and other types, use as-is
+                    row_dict[col_name] = value
+            
+            candidates.append(row_dict)
+
+        # Apply filters
+        filtered_candidates = candidates
+        
+        # Filter by min_activity_peak
+        if min_activity_peak is not None:
+            filtered_candidates = [
+                c for c in filtered_candidates
+                if c.get("activity_peak") is not None and c["activity_peak"] >= min_activity_peak
+            ]
+        
+        # Filter by min_obw_hz
+        if min_obw_hz is not None:
+            filtered_candidates = [
+                c for c in filtered_candidates
+                if c.get("f_low_99_hz") is not None and c.get("f_high_99_hz") is not None
+                and (c["f_high_99_hz"] - c["f_low_99_hz"]) >= min_obw_hz
+            ]
+        
+        # Sort by center_freq_hz (ascending)
+        filtered_candidates.sort(key=lambda c: c.get("center_freq_hz", 0) if c.get("center_freq_hz") is not None else 0)
+        
+        # Apply max_candidates limit (after filtering and sorting)
+        if max_candidates is not None and max_candidates > 0:
+            filtered_candidates = filtered_candidates[:max_candidates]
+        
+        return filtered_candidates

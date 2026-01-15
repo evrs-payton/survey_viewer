@@ -110,6 +110,15 @@ export interface ActivityRegionsResponse {
   }>;
 }
 
+export interface SignalCandidate {
+  center_freq_hz: number;
+  f_low_99_hz: number;
+  f_high_99_hz: number;
+  activity_peak: number;
+  activity_mean: number;
+  peak_dbm?: number;  // Optional
+}
+
 export async function listSurveys(): Promise<SurveyInfo[]> {
   return fetchJSON<SurveyInfo[]>('/bands/surveys');
 }
@@ -265,4 +274,32 @@ export async function getActivityRegions(
   return fetchJSON<ActivityRegionsResponse>(
     `/bands/survey/${encodedSurveyId}/band/${encodedBandId}/signal-activity/regions?${query.toString()}`
   );
+}
+
+export async function getSignalCandidates(
+  site: string,
+  missionType: string,
+  sensor: string,
+  runId: string,
+  bandId: string,
+  minActivityPeak?: number,
+  minObwHz?: number,
+  maxCandidates?: number
+): Promise<SignalCandidate[]> {
+  const query = new URLSearchParams();
+  query.set('site', site);
+  query.set('mission_type', missionType);
+  query.set('sensor', sensor);
+  query.set('run_id', runId);
+  query.set('band_id', bandId);
+  if (minActivityPeak !== undefined) {
+    query.set('min_activity_peak', minActivityPeak.toString());
+  }
+  if (minObwHz !== undefined) {
+    query.set('min_obw_hz', minObwHz.toString());
+  }
+  if (maxCandidates !== undefined) {
+    query.set('max_candidates', maxCandidates.toString());
+  }
+  return fetchJSON<SignalCandidate[]>(`/signals/candidates?${query.toString()}`);
 }
