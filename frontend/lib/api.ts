@@ -114,9 +114,51 @@ export interface SignalCandidate {
   center_freq_hz: number;
   f_low_99_hz: number;
   f_high_99_hz: number;
-  activity_peak: number;
-  activity_mean: number;
-  peak_dbm?: number;  // Optional
+  activity_peak?: number;
+  activity_mean?: number;
+  peak_dbm?: number;
+  presence?: number;
+  n_traces_hit?: number;
+  n_traces_total?: number;
+  bw_hz?: number;
+}
+
+export interface WaterfallTileParams {
+  f0?: number;
+  f1?: number;
+  t0?: number;
+  t1?: number;
+  maxw?: number;
+  maxt?: number;
+  fmt?: 'png';
+  level_id?: string;
+  vmin?: number;
+  vmax?: number;
+}
+
+export async function getWaterfallTile(
+  surveyId: string,
+  bandId: string,
+  params: WaterfallTileParams
+): Promise<{ blob: Blob; headers: Headers }> {
+  const query = new URLSearchParams();
+  query.set('survey_id', surveyId);
+  query.set('band_id', bandId);
+  if (params.f0 !== undefined) query.set('f0', params.f0.toString());
+  if (params.f1 !== undefined) query.set('f1', params.f1.toString());
+  if (params.t0 !== undefined) query.set('t0', params.t0.toString());
+  if (params.t1 !== undefined) query.set('t1', params.t1.toString());
+  if (params.maxw !== undefined) query.set('maxw', params.maxw.toString());
+  if (params.maxt !== undefined) query.set('maxt', params.maxt.toString());
+  if (params.level_id) query.set('level_id', params.level_id);
+  if (params.vmin !== undefined) query.set('vmin', params.vmin.toString());
+  if (params.vmax !== undefined) query.set('vmax', params.vmax.toString());
+  const response = await fetch(`${API_BASE}/waterfall/tile?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  const blob = await response.blob();
+  return { blob, headers: response.headers };
 }
 
 export async function listSurveys(): Promise<SurveyInfo[]> {

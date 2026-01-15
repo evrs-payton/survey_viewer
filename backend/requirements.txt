@@ -6,3 +6,4 @@ duckdb
 minio
 pyarrow
 asyncpg
+pillow

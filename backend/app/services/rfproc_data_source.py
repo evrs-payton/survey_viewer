@@ -5,13 +5,15 @@ Reads new rfproc gold products from MinIO using run manifests as discovery index
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from PIL import Image
 
 from .axis_validation import validate_axis_compatibility
 from .duck import get_connection
@@ -338,6 +340,16 @@ class RfprocGoldSilverDataSource:
         # Apply downsampling if needed
         arrays = _downsample_arrays(arrays, max_points)
 
+        # Try to get included_days from run manifest
+        included_days = None
+        run_manifest_path = (
+            f"runs/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/run_manifest.json"
+        )
+        run_manifest = _read_manifest(client, bucket, run_manifest_path)
+        if run_manifest:
+            included_days = run_manifest.get("included_days")
+
         metadata = {
             "band_id": band_id,
             "band_label": band_label,
@@ -351,6 +363,10 @@ class RfprocGoldSilverDataSource:
             "sensor": sensor,
             "run_ids": [run_id],
         }
+        
+        # Add included_days if available
+        if included_days:
+            metadata["included_days"] = included_days
 
         return {
             "freqs": arrays["freqs"].tolist(),
@@ -539,6 +555,125 @@ class RfprocGoldSilverDataSource:
             "metadata": metadata,
         }
 
+    def _arrow_row_to_python(self, table) -> List[Dict]:
+        """Convert Arrow table rows to JSON-safe dictionaries."""
+        rows: List[Dict] = []
+        for i in range(table.num_rows):
+            row_dict: Dict[str, object] = {}
+            for col_name in table.column_names:
+                col = table[col_name]
+                value = col[i].as_py()
+                if value is None:
+                    row_dict[col_name] = None
+                elif isinstance(value, (np.integer, np.int64, np.int32)):
+                    row_dict[col_name] = int(value)
+                elif isinstance(value, (np.floating, np.float64, np.float32)):
+                    row_dict[col_name] = float(value)
+                elif isinstance(value, (np.bool_, bool)):
+                    row_dict[col_name] = bool(value)
+                else:
+                    row_dict[col_name] = value
+            rows.append(row_dict)
+        return rows
+
+    def _map_tracewise_candidate_fields(self, candidate: Dict) -> Dict:
+        """Normalize tracewise candidate fields to legacy schema keys."""
+        mapped = dict(candidate)
+        if "center_hz" in candidate and "center_freq_hz" not in candidate:
+            mapped["center_freq_hz"] = candidate.get("center_hz")
+        if "f_lo_hz" in candidate and "f_low_99_hz" not in candidate:
+            mapped["f_low_99_hz"] = candidate.get("f_lo_hz")
+        if "f_hi_hz" in candidate and "f_high_99_hz" not in candidate:
+            mapped["f_high_99_hz"] = candidate.get("f_hi_hz")
+        return mapped
+
+    def get_signal_candidates_tracewise(
+        self,
+        survey_id: str,
+        band_id: str,
+        min_activity_peak: Optional[float] = None,
+        min_obw_hz: Optional[float] = None,
+        max_candidates: Optional[int] = None,
+    ) -> List[Dict]:
+        """Get tracewise signal candidates for a band from gold product."""
+        parts = survey_id.split(":")
+        if len(parts) != 4:
+            raise ValueError(
+                f"Invalid survey_id format: {survey_id} (expected 'mission_type:site:sensor:run_id')"
+            )
+        mission_type, site, sensor, run_id = parts
+
+        gold_manifest_path = (
+            f"gold/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/band_id={band_id}/product=signal_candidates_tracewise/manifest.json"
+        )
+
+        client = get_minio_client()
+        bucket = bucket_name()
+        gold_manifest = _read_manifest(client, bucket, gold_manifest_path)
+
+        if not gold_manifest:
+            raise ValueError(
+                f"Gold signal_candidates_tracewise manifest not found: {gold_manifest_path}"
+            )
+
+        if gold_manifest.get("status") != "success":
+            raise ValueError(
+                "Gold signal_candidates_tracewise manifest status is not 'success': "
+                f"{gold_manifest_path}"
+            )
+
+        data_object = gold_manifest.get("data_object")
+        if not data_object:
+            raise ValueError(
+                f"Gold manifest missing data_object: {gold_manifest_path}"
+            )
+
+        con = get_connection()
+        data_path = f"s3://{bucket}/{data_object}"
+        try:
+            table = con.execute(
+                f"SELECT * FROM read_parquet('{data_path}')"
+            ).fetch_arrow_table()
+        except Exception as e:
+            raise ValueError(
+                f"Failed to read gold signal_candidates_tracewise parquet data: {e}"
+            )
+
+        candidates = [
+            self._map_tracewise_candidate_fields(row)
+            for row in self._arrow_row_to_python(table)
+        ]
+
+        filtered_candidates = candidates
+        if min_activity_peak is not None:
+            filtered_candidates = [
+                c
+                for c in filtered_candidates
+                if c.get("activity_peak") is not None
+                and c["activity_peak"] >= min_activity_peak
+            ]
+
+        if min_obw_hz is not None:
+            filtered_candidates = [
+                c
+                for c in filtered_candidates
+                if c.get("f_low_99_hz") is not None
+                and c.get("f_high_99_hz") is not None
+                and (c["f_high_99_hz"] - c["f_low_99_hz"]) >= min_obw_hz
+            ]
+
+        filtered_candidates.sort(
+            key=lambda c: c.get("center_freq_hz", 0)
+            if c.get("center_freq_hz") is not None
+            else 0
+        )
+
+        if max_candidates is not None and max_candidates > 0:
+            filtered_candidates = filtered_candidates[:max_candidates]
+
+        return filtered_candidates
+
     def get_signal_candidates(
         self,
         survey_id: str,
@@ -548,9 +683,8 @@ class RfprocGoldSilverDataSource:
         max_candidates: Optional[int] = None,
     ) -> List[Dict]:
         """Get signal candidates for a band from gold product.
-        
-        Reads signal_candidates parquet file (one row per candidate) and returns
-        filtered list of candidates with JSON-safe types.
+
+        Prefers tracewise candidates if available; falls back to legacy candidates.
         
         Args:
             survey_id: Survey identifier in format '{mission_type}:{site}:{sensor}:{run_id}'
@@ -573,6 +707,19 @@ class RfprocGoldSilverDataSource:
             ValueError: If survey_id format is invalid, gold manifest not found,
                         or gold product status is not success
         """
+        try:
+            return self.get_signal_candidates_tracewise(
+                survey_id=survey_id,
+                band_id=band_id,
+                min_activity_peak=min_activity_peak,
+                min_obw_hz=min_obw_hz,
+                max_candidates=max_candidates,
+            )
+        except ValueError as exc:
+            message = str(exc).lower()
+            if "manifest not found" not in message and "missing data_object" not in message:
+                raise
+
         # Parse survey_id
         parts = survey_id.split(":")
         if len(parts) != 4:
@@ -610,31 +757,7 @@ class RfprocGoldSilverDataSource:
         except Exception as e:
             raise ValueError(f"Failed to read gold signal_candidates parquet data: {e}")
 
-        # Convert Arrow table to list of dicts (one per candidate row)
-        candidates = []
-        for i in range(table.num_rows):
-            row_dict = {}
-            for col_name in table.column_names:
-                col = table[col_name]
-                value = col[i].as_py()  # Convert to Python native type
-                
-                # Handle None values
-                if value is None:
-                    row_dict[col_name] = None
-                    continue
-                
-                # Convert numpy/pandas types to JSON-safe Python types
-                if isinstance(value, (np.integer, np.int64, np.int32)):
-                    row_dict[col_name] = int(value)
-                elif isinstance(value, (np.floating, np.float64, np.float32)):
-                    row_dict[col_name] = float(value)
-                elif isinstance(value, (np.bool_, bool)):
-                    row_dict[col_name] = bool(value)
-                else:
-                    # For strings and other types, use as-is
-                    row_dict[col_name] = value
-            
-            candidates.append(row_dict)
+        candidates = self._arrow_row_to_python(table)
 
         # Apply filters
         filtered_candidates = candidates
@@ -662,3 +785,284 @@ class RfprocGoldSilverDataSource:
             filtered_candidates = filtered_candidates[:max_candidates]
         
         return filtered_candidates
+
+    def _select_waterfall_level(
+        self,
+        levels: List[Dict],
+        maxw: int,
+        maxt: int,
+        f0_hz: float,
+        f1_hz: float,
+        t0_sec: float,
+        t1_sec: float,
+        step_hz: float,
+    ) -> Optional[Dict]:
+        """Pick the finest level that fits within maxw/maxt for requested bounds."""
+        if not levels:
+            return None
+
+        freq_span_hz = max(1.0, abs(f1_hz - f0_hz))
+        time_span_sec = max(1.0, abs(t1_sec - t0_sec))
+
+        def level_detail(level: Dict) -> Tuple[float, float]:
+            return float(level.get("time_bin_sec", 0)), float(level.get("freq_group_size", 0))
+
+        levels_sorted = sorted(levels, key=level_detail)
+        for level in levels_sorted:
+            time_bin_sec = float(level.get("time_bin_sec", 0))
+            freq_group_size = int(level.get("freq_group_size", 0))
+            if time_bin_sec <= 0 or freq_group_size <= 0:
+                continue
+            freq_group_hz = step_hz * freq_group_size
+            n_time_bins = int(math.ceil(time_span_sec / time_bin_sec)) + 1
+            n_freq_bins = int(math.ceil(freq_span_hz / freq_group_hz))
+            if n_time_bins <= maxt and n_freq_bins <= maxw:
+                return level
+        return levels_sorted[0]
+
+    def _render_waterfall_image(
+        self, intensity: np.ndarray, vmin: Optional[float] = None, vmax: Optional[float] = None
+    ) -> Tuple[bytes, int, int]:
+        """Render intensity grid to PNG bytes.
+        
+        Args:
+            intensity: Intensity array (uint8 or uint16)
+            vmin: Optional minimum value for color scale (if None, use data min)
+            vmax: Optional maximum value for color scale (if None, use data max)
+        """
+        # Convert to float for normalization
+        if intensity.dtype == np.uint16:
+            intensity_float = intensity.astype(np.float32)
+        else:
+            intensity_float = intensity.astype(np.float32, copy=False)
+        
+        # Normalize based on vmin/vmax
+        if vmin is None:
+            vmin = float(np.min(intensity_float))
+        if vmax is None:
+            vmax = float(np.max(intensity_float))
+        
+        # Avoid division by zero
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        
+        # Normalize to 0-1 range
+        normalized = np.clip((intensity_float - vmin) / (vmax - vmin), 0.0, 1.0)
+        
+        # Convert to 0-255 range for colormap
+        grid_8 = (normalized * 255.0).astype(np.uint8)
+
+        # Build simple heatmap colormap (red->orange->yellow->green->blue->black)
+        stops = np.array(
+            [
+                [255, 0, 0],
+                [255, 165, 0],
+                [255, 255, 0],
+                [0, 255, 0],
+                [0, 0, 255],
+                [0, 0, 0],
+            ],
+            dtype=np.float32,
+        )
+        t = np.linspace(0, 1, len(stops))
+        xi = grid_8.astype(np.float32) / 255.0
+        idx = np.clip(np.searchsorted(t, xi, side="right") - 1, 0, len(stops) - 2)
+        frac = (xi - t[idx]) / np.maximum(t[idx + 1] - t[idx], 1e-6)
+        lower = stops[idx]
+        upper = stops[idx + 1]
+        rgb = (lower + (upper - lower) * frac[..., None]).astype(np.uint8)
+
+        image = Image.fromarray(rgb, mode="RGB")
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return buf.getvalue(), image.width, image.height
+
+    def get_waterfall_tile(
+        self,
+        survey_id: str,
+        band_id: str,
+        f0: Optional[float],
+        f1: Optional[float],
+        t0: Optional[float],
+        t1: Optional[float],
+        maxw: int,
+        maxt: int,
+        level_id: Optional[str] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+    ) -> Tuple[bytes, Dict[str, str]]:
+        """Get a waterfall PNG tile for a band."""
+        parts = survey_id.split(":")
+        if len(parts) != 4:
+            raise ValueError(
+                f"Invalid survey_id format: {survey_id} (expected 'mission_type:site:sensor:run_id')"
+            )
+        mission_type, site, sensor, run_id = parts
+
+        run_manifest_path = (
+            f"runs/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/run_manifest.json"
+        )
+
+        client = get_minio_client()
+        bucket = bucket_name()
+        run_manifest = _read_manifest(client, bucket, run_manifest_path)
+        if not run_manifest:
+            raise ValueError(f"Run manifest not found: {run_manifest_path}")
+
+        bands = run_manifest.get("bands", {})
+        band_info = bands.get(band_id)
+        if not band_info:
+            raise ValueError(f"Band not found in run manifest: {band_id}")
+
+        silver_manifest_paths = band_info.get("silver_manifests", [])
+        waterfall_manifests = [
+            p for p in silver_manifest_paths if "/product=waterfall/" in p
+        ]
+
+        if not waterfall_manifests:
+            raise ValueError(f"No waterfall manifests found for band {band_id}")
+
+        manifest_candidates: List[Dict] = []
+        for manifest_path in waterfall_manifests:
+            manifest = _read_manifest(client, bucket, manifest_path)
+            if manifest:
+                manifest_candidates.append(manifest)
+
+        if not manifest_candidates:
+            raise ValueError(f"Waterfall manifests not readable for band {band_id}")
+
+        manifest_candidates.sort(
+            key=lambda m: int(m.get("time_end_unix_sec", 0)), reverse=True
+        )
+        manifest = manifest_candidates[0]
+
+        levels = manifest.get("levels", [])
+        if not levels:
+            raise ValueError("Waterfall manifest missing levels")
+
+        time_start_unix = float(manifest.get("time_start_unix_sec", 0))
+        time_end_unix = float(manifest.get("time_end_unix_sec", 0))
+        if time_end_unix <= time_start_unix:
+            raise ValueError("Invalid time range in waterfall manifest")
+
+        start_hz = float(manifest.get("start_hz", 0))
+        stop_hz = float(manifest.get("stop_hz", 0))
+        step_hz = float(manifest.get("step_hz", 0))
+
+        total_duration_sec = time_end_unix - time_start_unix
+
+        f0_hz = start_hz if f0 is None else float(f0)
+        f1_hz = stop_hz if f1 is None else float(f1)
+        t0_rel = 0.0 if t0 is None else float(t0)
+        t1_rel = total_duration_sec if t1 is None else float(t1)
+
+        f0_hz = max(start_hz, min(f0_hz, stop_hz))
+        f1_hz = max(start_hz, min(f1_hz, stop_hz))
+        if f1_hz < f0_hz:
+            f0_hz, f1_hz = f1_hz, f0_hz
+
+        t0_rel = max(0.0, min(t0_rel, total_duration_sec))
+        t1_rel = max(0.0, min(t1_rel, total_duration_sec))
+        if t1_rel < t0_rel:
+            t0_rel, t1_rel = t1_rel, t0_rel
+
+        level = None
+        if level_id:
+            for item in levels:
+                if str(item.get("level_id")) == str(level_id):
+                    level = item
+                    break
+        if level is None:
+            for item in levels:
+                if str(item.get("level_id")) == "T0_F0":
+                    level = item
+                    break
+        if level is None:
+            level = self._select_waterfall_level(
+                levels=levels,
+                maxw=maxw,
+                maxt=maxt,
+                f0_hz=f0_hz,
+                f1_hz=f1_hz,
+                t0_sec=t0_rel,
+                t1_sec=t1_rel,
+                step_hz=step_hz,
+            )
+        if level is None:
+            raise ValueError("No suitable waterfall level found")
+
+        data_object = level.get("data_object")
+        if not data_object:
+            raise ValueError("Waterfall level missing data_object")
+
+        freq_group_size = int(level.get("freq_group_size", 1))
+        time_bin_sec = float(level.get("time_bin_sec", 1.0))
+        freq_group_hz = step_hz * freq_group_size
+
+        start_time_idx = int(math.floor(t0_rel / time_bin_sec))
+        end_time_idx = int(math.ceil(t1_rel / time_bin_sec))
+
+        start_freq_idx = int(math.floor((f0_hz - start_hz) / freq_group_hz))
+        end_freq_idx = int(math.ceil((f1_hz - start_hz) / freq_group_hz))
+
+        con = get_connection()
+        data_path = f"s3://{bucket}/{data_object}"
+        query = """
+        SELECT time_bin_index, intensity
+        FROM read_parquet($1)
+        WHERE time_bin_index >= $2 AND time_bin_index <= $3
+        ORDER BY time_bin_index ASC
+        """
+        try:
+            table = con.execute(
+                query,
+                [data_path, start_time_idx, end_time_idx],
+            ).fetch_arrow_table()
+        except Exception as e:
+            raise ValueError(f"Failed to read waterfall parquet data: {e}")
+
+        if table.num_rows == 0:
+            raise ValueError("No waterfall data available for requested range")
+
+        intensity_col = table["intensity"]
+        n_rows = table.num_rows
+        n_freq_bins = int(level.get("n_freq_bins_level", 0))
+        if hasattr(intensity_col, "combine_chunks"):
+            intensity_col = intensity_col.combine_chunks()
+        intensity_values = intensity_col.values.to_numpy(zero_copy_only=False)
+        grid = intensity_values.reshape((n_rows, n_freq_bins))
+
+        start_freq_idx = max(0, min(start_freq_idx, n_freq_bins))
+        end_freq_idx = max(0, min(end_freq_idx, n_freq_bins))
+        if end_freq_idx <= start_freq_idx:
+            end_freq_idx = min(n_freq_bins, start_freq_idx + 1)
+
+        grid = grid[:, start_freq_idx:end_freq_idx]
+
+        if grid.shape[0] > maxt:
+            stride = max(1, int(math.ceil(grid.shape[0] / maxt)))
+            grid = grid[::stride]
+        if grid.shape[1] > maxw:
+            stride = max(1, int(math.ceil(grid.shape[1] / maxw)))
+            grid = grid[:, ::stride]
+
+        png_bytes, width, height = self._render_waterfall_image(grid, vmin=vmin, vmax=vmax)
+
+        time_start = start_time_idx * time_bin_sec
+        time_end = min(total_duration_sec, (end_time_idx + 1) * time_bin_sec)
+        freq_start = start_hz + start_freq_idx * freq_group_hz
+        freq_end = start_hz + end_freq_idx * freq_group_hz
+
+        headers = {
+            "X-Time-Start": str(time_start),
+            "X-Time-End": str(time_end),
+            "X-Freq-Start": str(freq_start),
+            "X-Freq-End": str(freq_end),
+            "X-Tile-Width": str(width),
+            "X-Tile-Height": str(height),
+            "X-Waterfall-Level-Id": str(level.get("level_id")),
+            "X-Waterfall-Time-Bin-Sec": str(level.get("time_bin_sec")),
+            "X-Waterfall-Freq-Group-Size": str(level.get("freq_group_size")),
+        }
+        return png_bytes, headers

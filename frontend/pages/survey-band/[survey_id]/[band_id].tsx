@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
 import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, getSignalActivity, getActivityRegions, getSignalCandidates, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion, type SignalActivityResponse, type ActivityRegionsResponse, type SignalCandidate } from '../../../lib/api';
+import Waterfall from '../../../components/Waterfall';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -35,6 +36,7 @@ export default function SurveyBandDetailPage() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
   const [zoomRange, setZoomRange] = useState<[number, number] | undefined>(undefined);
+  const [waterfallBounds, setWaterfallBounds] = useState<{ f0?: number; f1?: number; t0?: number; t1?: number }>({});
   const [showOverlays, setShowOverlays] = useState<boolean>(false);
   const [overlays, setOverlays] = useState<AssignmentOverlay[] | null>(null);
   const [overlaysLoading, setOverlaysLoading] = useState<boolean>(false);
@@ -72,6 +74,14 @@ export default function SurveyBandDetailPage() {
   const [signalCandidatesLoading, setSignalCandidatesLoading] = useState<boolean>(false);
   const [signalCandidatesError, setSignalCandidatesError] = useState<string | null>(null);
   const [highlightedCandidateIndex, setHighlightedCandidateIndex] = useState<number | null>(null);
+
+  // Sidebar state
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  
+  // Waterfall display state
+  const [showWaterfall, setShowWaterfall] = useState<boolean>(true);
+  const [waterfallVmin, setWaterfallVmin] = useState<number | undefined>(undefined);
+  const [waterfallVmax, setWaterfallVmax] = useState<number | undefined>(undefined);
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
@@ -414,6 +424,7 @@ export default function SurveyBandDetailPage() {
             fillcolor: 'rgba(76, 175, 80, 0.3)',
             opacity: isHighlighted ? 0.5 : 0.3,
             hoverinfo: 'skip' as const,
+            layer: 'above' as const,
           } as any;
         })
       : [];
@@ -601,7 +612,15 @@ export default function SurveyBandDetailPage() {
       if (startHz !== null && startHz !== undefined && stopHz !== null && stopHz !== undefined) {
         signalCandidates.forEach((candidate) => {
           const centerMHz = candidate.center_freq_hz / 1e6;
-          const obwMHz = (candidate.f_high_99_hz - candidate.f_low_99_hz) / 1e6;
+          const obwHz = (candidate.f_high_99_hz - candidate.f_low_99_hz);
+          const obwMHz = obwHz / 1e6;
+          const presenceText = candidate.presence !== undefined
+            ? `Presence: ${(candidate.presence * 100).toFixed(1)}%`
+            : null;
+          const tracesText = candidate.n_traces_hit !== undefined && candidate.n_traces_total !== undefined
+            ? `Traces: ${candidate.n_traces_hit}/${candidate.n_traces_total}`
+            : null;
+          const extraLines = [presenceText, tracesText].filter(Boolean).join('<br>');
           
           // Calculate y position from power data range
           const allPowerValues = holdsData ? [...holdsData.min_hold, ...holdsData.max_hold, ...holdsData.avg_hold].filter(v => !isNaN(v) && isFinite(v)) : [];
@@ -610,7 +629,7 @@ export default function SurveyBandDetailPage() {
           annotations.push({
             x: centerMHz,
             y: yMax * 0.95, // Position near top of chart
-            text: `${centerMHz.toFixed(3)} MHz<br>OBW: ${obwMHz.toFixed(3)} MHz`,
+            text: `${centerMHz.toFixed(3)} MHz<br>BW: ${obwMHz.toFixed(3)} MHz${extraLines ? `<br>${extraLines}` : ''}`,
             showarrow: false,
             xref: 'x',
             yref: 'y',
@@ -624,8 +643,13 @@ export default function SurveyBandDetailPage() {
       }
     }
 
+    // Format frequency range for title
+    const freqRangeTitle = metadata && metadata.start_hz !== null && metadata.start_hz !== undefined && metadata.stop_hz !== null && metadata.stop_hz !== undefined
+      ? `${formatFrequency(metadata.start_hz)} - ${formatFrequency(metadata.stop_hz)}`
+      : 'Power Statistics';
+
     return {
-      title: `Band ${bandId}${bandLabel ? ` (${bandLabel})` : ''} — Power Statistics`,
+      title: freqRangeTitle,
       dragmode: addRegionMode ? 'select' : 'zoom',
       margin: { l: 64, r: 32, t: 80, b: 72 },
       paper_bgcolor: '#0c0d10',
@@ -699,10 +723,22 @@ export default function SurveyBandDetailPage() {
   // Handle relayout events to update editing region when shape is moved/resized
   const handleRelayout = useCallback((eventData: any) => {
     // Handle zoom/pan first
-    if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
-      setZoomRange([eventData['xaxis.range[0]'], eventData['xaxis.range[1]']]);
+    if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {
+      const x0 = Number(eventData['xaxis.range[0]']);
+      const x1 = Number(eventData['xaxis.range[1]']);
+      setZoomRange([x0, x1]);
+      setWaterfallBounds((prev) => ({
+        ...prev,
+        f0: x0 * 1e6,
+        f1: x1 * 1e6,
+      }));
     } else if (eventData['xaxis.autorange']) {
       setZoomRange(undefined);
+      setWaterfallBounds((prev) => ({
+        ...prev,
+        f0: undefined,
+        f1: undefined,
+      }));
     }
 
     // Handle shape editing if we're in editing mode
@@ -875,224 +911,429 @@ export default function SurveyBandDetailPage() {
   const nTraces = metadata.n_traces ?? null;
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">Band Detail</p>
-          <h1>
-            Band {metadata.band_id}
-            {metadata.band_label && ` — ${metadata.band_label}`}
-          </h1>
-          <p className="muted">
-            Survey: {formatSurveyId(decodedSurveyId)}
-            {startHz !== null && stopHz !== null && (
-              <>
-                <br />
-                Frequency: {formatFrequency(startHz)} - {formatFrequency(stopHz)} | Traces: {nTraces ?? 'N/A'}
-              </>
-            )}
-          </p>
+    <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#0c0d10' }}>
+      {/* Sidebar */}
+      <aside
+        style={{
+          width: sidebarCollapsed ? '50px' : '320px',
+          minWidth: sidebarCollapsed ? '50px' : '280px',
+          maxWidth: sidebarCollapsed ? '50px' : '380px',
+          height: '100vh',
+          position: 'sticky',
+          top: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          background: '#0c0d10',
+          borderRight: '1px solid rgba(255,255,255,0.08)',
+          transition: 'width 0.3s ease',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {/* Collapse Toggle */}
+        <div style={{ padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <button
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            style={{
+              width: '100%',
+              padding: '0.5rem',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: '0.25rem',
+              color: '#f7f7f7',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? '▶' : '◀'}
+          </button>
         </div>
-      </header>
 
-      <section style={{ 
-        position: 'sticky', 
-        top: 0, 
-        zIndex: 100, 
-        background: '#0c0d10', 
-        paddingBottom: '1rem',
-        marginBottom: '1rem',
-        borderBottom: '1px solid rgba(255,255,255,0.1)'
-      }}>
-        <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <input
-              type="checkbox"
-              id="show-overlays"
-              checked={showOverlays}
-              onChange={(e) => setShowOverlays(e.target.checked)}
-              style={{ cursor: 'pointer' }}
-            />
-            <label htmlFor="show-overlays" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-              Show Assignment Overlays
-            </label>
-            {overlaysLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
-          </div>
-          {showOverlays && overlays && overlays.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
-              <input
-                type="checkbox"
-                id="show-labels"
-                checked={showLabels}
-                onChange={(e) => setShowLabels(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              <label htmlFor="show-labels" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-                Show assignment labels
-              </label>
-            </div>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <input
-              type="checkbox"
-              id="show-manual-regions"
-              checked={showManualRegions}
-              onChange={(e) => setShowManualRegions(e.target.checked)}
-              style={{ cursor: 'pointer' }}
-            />
-            <label htmlFor="show-manual-regions" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-              Show Manual Regions
-            </label>
-            {manualRegionsLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
-            {showManualRegions && !editingRegion && (
-              <button
-                onClick={() => {
-                  setAddRegionMode(true);
-                  setEditingRegion(null);
-                }}
-                disabled={addRegionMode}
-                style={{
-                  padding: '0.4rem 0.75rem',
-                  background: addRegionMode ? '#1a1d29' : '#2a2d39',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: '0.25rem',
-                  color: addRegionMode ? '#666' : '#f7f7f7',
-                  fontSize: '0.9rem',
-                  cursor: addRegionMode ? 'not-allowed' : 'pointer',
-                  fontWeight: 'bold',
-                  marginLeft: '0.5rem',
-                }}
-              >
-                {addRegionMode ? 'Selection Mode Active' : '+ Add Region'}
-              </button>
-            )}
-          </div>
-          {showManualRegions && manualRegions && manualRegions.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
-              <input
-                type="checkbox"
-                id="show-manual-region-labels"
-                checked={showManualRegionLabels}
-                onChange={(e) => setShowManualRegionLabels(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              <label htmlFor="show-manual-region-labels" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-                Show manual region labels
-              </label>
-            </div>
-          )}
-          {showManualRegions && addRegionMode && (
-            <div style={{ marginLeft: '1.5rem', color: '#ffcc00', fontSize: '0.9rem' }}>
-              Selection mode active: Click and drag on the chart to select a region
-            </div>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <input
-              type="checkbox"
-              id="show-signal-activity"
-              checked={showSignalActivity}
-              onChange={(e) => setShowSignalActivity(e.target.checked)}
-              style={{ cursor: 'pointer' }}
-            />
-            <label htmlFor="show-signal-activity" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-              Signal activity
-            </label>
-            {signalActivityLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
-            {signalActivityError && (
-              <span style={{ color: '#ff6b6b', fontSize: '0.9rem' }}>
-                Error: {signalActivityError}
-              </span>
-            )}
-          </div>
-          {showSignalActivity && signalActivityData && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
-                <input
-                  type="checkbox"
-                  id="show-activity-regions"
-                  checked={showActivityRegions}
-                  onChange={(e) => setShowActivityRegions(e.target.checked)}
-                  disabled={!showSignalActivity}
-                  style={{ cursor: showSignalActivity ? 'pointer' : 'not-allowed' }}
-                />
-                <label 
-                  htmlFor="show-activity-regions" 
-                  style={{ 
-                    color: showSignalActivity ? '#f7f7f7' : '#666', 
-                    cursor: showSignalActivity ? 'pointer' : 'not-allowed' 
-                  }}
-                >
-                  Show activity regions
-                </label>
-              </div>
-              {showActivityRegions && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem', flexWrap: 'wrap' }}>
-                  <label 
-                    htmlFor="activity-threshold" 
-                    style={{ color: '#f7f7f7', fontSize: '0.9rem', minWidth: '100px' }}
-                  >
-                    Threshold: {(activityThreshold * 100).toFixed(1)}%
-                  </label>
+        {!sidebarCollapsed && (
+          <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', flex: 1 }}>
+            {/* Controls Section */}
+            <section>
+              <h2 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.1rem', fontWeight: 'bold' }}>Controls</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
-                    type="range"
-                    id="activity-threshold"
-                    min="0"
-                    max="0.5"
-                    step="0.01"
-                    value={activityThreshold}
-                    onChange={(e) => setActivityThreshold(parseFloat(e.target.value))}
-                    disabled={!showActivityRegions}
-                    style={{ 
-                      flex: '1', 
-                      minWidth: '200px',
-                      cursor: showActivityRegions ? 'pointer' : 'not-allowed',
-                      opacity: showActivityRegions ? 1 : 0.5,
-                    }}
+                    type="checkbox"
+                    id="show-overlays"
+                    checked={showOverlays}
+                    onChange={(e) => setShowOverlays(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
                   />
+                  <label htmlFor="show-overlays" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    Show Assignment Overlays
+                  </label>
+                  {overlaysLoading && <span style={{ color: '#888', fontSize: '0.8rem' }}>(loading...)</span>}
                 </div>
-              )}
-            </>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <input
-              type="checkbox"
-              id="show-signal-candidates"
-              checked={showSignalCandidates}
-              onChange={(e) => setShowSignalCandidates(e.target.checked)}
-              style={{ cursor: 'pointer' }}
-            />
-            <label htmlFor="show-signal-candidates" style={{ color: '#f7f7f7', cursor: 'pointer' }}>
-              Signal Candidates
-            </label>
-            {signalCandidatesLoading && <span style={{ color: '#888', fontSize: '0.9rem' }}>(loading...)</span>}
-            {signalCandidatesError && (
-              <span style={{ color: '#ff6b6b', fontSize: '0.9rem' }}>
-                Error: {signalCandidatesError}
-              </span>
-            )}
+                {showOverlays && overlays && overlays.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+                    <input
+                      type="checkbox"
+                      id="show-labels"
+                      checked={showLabels}
+                      onChange={(e) => setShowLabels(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <label htmlFor="show-labels" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.85rem' }}>
+                      Show assignment labels
+                    </label>
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="checkbox"
+                    id="show-manual-regions"
+                    checked={showManualRegions}
+                    onChange={(e) => setShowManualRegions(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="show-manual-regions" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    Show Manual Regions
+                  </label>
+                  {manualRegionsLoading && <span style={{ color: '#888', fontSize: '0.8rem' }}>(loading...)</span>}
+                  {showManualRegions && !editingRegion && (
+                    <button
+                      onClick={() => {
+                        setAddRegionMode(true);
+                        setEditingRegion(null);
+                      }}
+                      disabled={addRegionMode}
+                      style={{
+                        padding: '0.4rem 0.75rem',
+                        background: addRegionMode ? '#1a1d29' : '#2a2d39',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        borderRadius: '0.25rem',
+                        color: addRegionMode ? '#666' : '#f7f7f7',
+                        fontSize: '0.85rem',
+                        cursor: addRegionMode ? 'not-allowed' : 'pointer',
+                        fontWeight: 'bold',
+                        marginLeft: '0.5rem',
+                      }}
+                    >
+                      {addRegionMode ? 'Selection Mode Active' : '+ Add Region'}
+                    </button>
+                  )}
+                </div>
+                {showManualRegions && manualRegions && manualRegions.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+                    <input
+                      type="checkbox"
+                      id="show-manual-region-labels"
+                      checked={showManualRegionLabels}
+                      onChange={(e) => setShowManualRegionLabels(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <label htmlFor="show-manual-region-labels" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.85rem' }}>
+                      Show manual region labels
+                    </label>
+                  </div>
+                )}
+                {showManualRegions && addRegionMode && (
+                  <div style={{ marginLeft: '1.5rem', color: '#ffcc00', fontSize: '0.8rem' }}>
+                    Selection mode active: Click and drag on the chart to select a region
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="checkbox"
+                    id="show-signal-activity"
+                    checked={showSignalActivity}
+                    onChange={(e) => setShowSignalActivity(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="show-signal-activity" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    Signal Activity
+                  </label>
+                  {signalActivityLoading && <span style={{ color: '#888', fontSize: '0.8rem' }}>(loading...)</span>}
+                  {signalActivityError && (
+                    <span style={{ color: '#ff6b6b', fontSize: '0.8rem' }}>
+                      Error: {signalActivityError}
+                    </span>
+                  )}
+                </div>
+                {showSignalActivity && signalActivityData && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+                      <input
+                        type="checkbox"
+                        id="show-activity-regions"
+                        checked={showActivityRegions}
+                        onChange={(e) => setShowActivityRegions(e.target.checked)}
+                        disabled={!showSignalActivity}
+                        style={{ cursor: showSignalActivity ? 'pointer' : 'not-allowed' }}
+                      />
+                      <label 
+                        htmlFor="show-activity-regions" 
+                        style={{ 
+                          color: showSignalActivity ? '#f7f7f7' : '#666', 
+                          cursor: showSignalActivity ? 'pointer' : 'not-allowed',
+                          fontSize: '0.85rem'
+                        }}
+                      >
+                        Show activity regions
+                      </label>
+                    </div>
+                    {showActivityRegions && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginLeft: '1.5rem' }}>
+                        <label 
+                          htmlFor="activity-threshold" 
+                          style={{ color: '#f7f7f7', fontSize: '0.85rem' }}
+                        >
+                          Threshold: {(activityThreshold * 100).toFixed(1)}%
+                        </label>
+                        <input
+                          type="range"
+                          id="activity-threshold"
+                          min="0"
+                          max="0.5"
+                          step="0.01"
+                          value={activityThreshold}
+                          onChange={(e) => setActivityThreshold(parseFloat(e.target.value))}
+                          disabled={!showActivityRegions}
+                          style={{ 
+                            width: '100%',
+                            cursor: showActivityRegions ? 'pointer' : 'not-allowed',
+                            opacity: showActivityRegions ? 1 : 0.5,
+                          }}
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="checkbox"
+                    id="show-signal-candidates"
+                    checked={showSignalCandidates}
+                    onChange={(e) => setShowSignalCandidates(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="show-signal-candidates" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    Signal Candidates
+                  </label>
+                  {signalCandidatesLoading && <span style={{ color: '#888', fontSize: '0.8rem' }}>(loading...)</span>}
+                  {signalCandidatesError && (
+                    <span style={{ color: '#ff6b6b', fontSize: '0.8rem' }}>
+                      Error: {signalCandidatesError}
+                    </span>
+                  )}
+                </div>
+                {showSignalCandidates && signalCandidates && signalCandidates.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
+                    <input
+                      type="checkbox"
+                      id="show-candidate-labels"
+                      checked={showCandidateLabels}
+                      onChange={(e) => setShowCandidateLabels(e.target.checked)}
+                      disabled={!showSignalCandidates}
+                      style={{ cursor: showSignalCandidates ? 'pointer' : 'not-allowed' }}
+                    />
+                    <label 
+                      htmlFor="show-candidate-labels" 
+                      style={{ 
+                        color: showSignalCandidates ? '#f7f7f7' : '#666', 
+                        cursor: showSignalCandidates ? 'pointer' : 'not-allowed',
+                        fontSize: '0.85rem'
+                      }}
+                    >
+                      Show candidate labels
+                    </label>
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                  <input
+                    type="checkbox"
+                    id="show-waterfall"
+                    checked={showWaterfall}
+                    onChange={(e) => setShowWaterfall(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="show-waterfall" style={{ color: '#f7f7f7', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    Show Waterfall
+                  </label>
+                </div>
+                {showWaterfall && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginLeft: '1.5rem', marginTop: '0.5rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <label htmlFor="waterfall-vmin" style={{ color: '#f7f7f7', fontSize: '0.85rem' }}>
+                        Color Scale Min: {waterfallVmin !== undefined ? waterfallVmin.toFixed(1) : 'Auto'}
+                      </label>
+                      <input
+                        type="number"
+                        id="waterfall-vmin"
+                        step="0.1"
+                        value={waterfallVmin ?? ''}
+                        onChange={(e) => {
+                          const value = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                          setWaterfallVmin(isNaN(value as number) ? undefined : value);
+                        }}
+                        placeholder="Auto"
+                        style={{
+                          padding: '0.4rem',
+                          background: '#1a1d29',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          borderRadius: '0.25rem',
+                          color: '#f7f7f7',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <label htmlFor="waterfall-vmax" style={{ color: '#f7f7f7', fontSize: '0.85rem' }}>
+                        Color Scale Max: {waterfallVmax !== undefined ? waterfallVmax.toFixed(1) : 'Auto'}
+                      </label>
+                      <input
+                        type="number"
+                        id="waterfall-vmax"
+                        step="0.1"
+                        value={waterfallVmax ?? ''}
+                        onChange={(e) => {
+                          const value = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                          setWaterfallVmax(isNaN(value as number) ? undefined : value);
+                        }}
+                        placeholder="Auto"
+                        style={{
+                          padding: '0.4rem',
+                          background: '#1a1d29',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          borderRadius: '0.25rem',
+                          color: '#f7f7f7',
+                          fontSize: '0.85rem',
+                        }}
+                      />
+                    </div>
+                    {(waterfallVmin !== undefined || waterfallVmax !== undefined) && (
+                      <button
+                        onClick={() => {
+                          setWaterfallVmin(undefined);
+                          setWaterfallVmax(undefined);
+                        }}
+                        style={{
+                          padding: '0.4rem 0.75rem',
+                          background: 'rgba(255,255,255,0.1)',
+                          border: '1px solid rgba(255,255,255,0.2)',
+                          borderRadius: '0.25rem',
+                          color: '#f7f7f7',
+                          fontSize: '0.85rem',
+                          cursor: 'pointer',
+                          alignSelf: 'flex-start',
+                        }}
+                      >
+                        Reset to Auto
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Band Information Section */}
+            <section>
+              <h2 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.1rem', fontWeight: 'bold' }}>Band Information</h2>
+              <dl style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', color: '#f7f7f7', fontSize: '0.9rem' }}>
+                {startHz !== null && stopHz !== null && (
+                  <div>
+                    <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Frequency Range</dt>
+                    <dd style={{ margin: 0 }}>{formatFrequency(startHz)} - {formatFrequency(stopHz)}</dd>
+                  </div>
+                )}
+                {metadata.n_traces !== null && metadata.n_traces !== undefined && (
+                  <div>
+                    <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Traces</dt>
+                    <dd style={{ margin: 0 }}>{metadata.n_traces.toLocaleString()}</dd>
+                  </div>
+                )}
+                {metadata.step_hz !== null && metadata.step_hz !== undefined && (
+                  <div>
+                    <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Step Frequency</dt>
+                    <dd style={{ margin: 0 }}>{formatFrequency(metadata.step_hz)}</dd>
+                  </div>
+                )}
+                {metadata.n_freqs !== undefined && (
+                  <div>
+                    <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Frequency Bins</dt>
+                    <dd style={{ margin: 0 }}>{metadata.n_freqs.toLocaleString()}</dd>
+                  </div>
+                )}
+                {metadata.site && (
+                  <div>
+                    <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Site</dt>
+                    <dd style={{ margin: 0 }}>{metadata.site}</dd>
+                  </div>
+                )}
+                {metadata.sensor && (
+                  <div>
+                    <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Sensor</dt>
+                    <dd style={{ margin: 0 }}>{metadata.sensor}</dd>
+                  </div>
+                )}
+                {(() => {
+                  // Try to extract date range from metadata or calculate from included_days if available
+                  const includedDays = (metadata as any).included_days as string[] | undefined;
+                  let dateRange: string | null = null;
+                  
+                  if (includedDays && Array.isArray(includedDays) && includedDays.length > 0) {
+                    const sortedDays = [...includedDays].sort();
+                    const startDate = sortedDays[0];
+                    const endDate = sortedDays[sortedDays.length - 1];
+                    if (startDate && endDate) {
+                      // Format dates: YYYY-MM-DD to readable format
+                      const formatDate = (dateStr: string) => {
+                        try {
+                          const date = new Date(dateStr + 'T00:00:00Z');
+                          return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                        } catch {
+                          return dateStr;
+                        }
+                      };
+                      if (startDate === endDate) {
+                        dateRange = formatDate(startDate);
+                      } else {
+                        dateRange = `${formatDate(startDate)} - ${formatDate(endDate)}`;
+                      }
+                    }
+                  } else if ((metadata as any).date_start && (metadata as any).date_end) {
+                    // Alternative date fields if available
+                    const formatDate = (dateStr: string) => {
+                      try {
+                        const date = new Date(dateStr);
+                        return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                      } catch {
+                        return dateStr;
+                      }
+                    };
+                    dateRange = `${formatDate((metadata as any).date_start)} - ${formatDate((metadata as any).date_end)}`;
+                  }
+                  
+                  return dateRange ? (
+                    <div>
+                      <dt style={{ fontWeight: 'bold', marginBottom: '0.25rem', color: 'rgba(155, 171, 207, 0.9)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Date Range</dt>
+                      <dd style={{ margin: 0, fontSize: '0.85rem' }}>{dateRange}</dd>
+                    </div>
+                  ) : null;
+                })()}
+              </dl>
+            </section>
           </div>
-          {showSignalCandidates && signalCandidates && signalCandidates.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1.5rem' }}>
-              <input
-                type="checkbox"
-                id="show-candidate-labels"
-                checked={showCandidateLabels}
-                onChange={(e) => setShowCandidateLabels(e.target.checked)}
-                disabled={!showSignalCandidates}
-                style={{ cursor: showSignalCandidates ? 'pointer' : 'not-allowed' }}
-              />
-              <label 
-                htmlFor="show-candidate-labels" 
-                style={{ 
-                  color: showSignalCandidates ? '#f7f7f7' : '#666', 
-                  cursor: showSignalCandidates ? 'pointer' : 'not-allowed' 
-                }}
-              >
-                Show candidate labels
-              </label>
-            </div>
-          )}
-        </div>
+        )}
+      </aside>
+
+      {/* Main Content */}
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: '2rem', gap: '2rem' }}>
+        <section style={{ 
+          marginBottom: showWaterfall ? 0 : '2rem',
+          padding: '1rem',
+          background: '#0f1320',
+          borderRadius: '0.75rem',
+          border: '1px solid rgba(255,255,255,0.08)'
+        }}>
         {traces.length > 0 && (
           <div style={{ position: 'relative' }}>
             <Plot
@@ -1223,6 +1464,42 @@ export default function SurveyBandDetailPage() {
               </div>
             )}
           </div>
+        )}
+        
+        {showWaterfall && (
+          <>
+            <div style={{ 
+              height: '1px', 
+              background: 'rgba(255,255,255,0.1)', 
+              margin: '1rem 0',
+              marginTop: traces.length > 0 ? '1rem' : '0'
+            }} />
+            <Waterfall
+              surveyId={decodedSurveyId}
+              bandId={decodedBandId}
+              f0={waterfallBounds.f0 ?? (zoomRange ? zoomRange[0] * 1e6 : startHz ?? undefined)}
+              f1={waterfallBounds.f1 ?? (zoomRange ? zoomRange[1] * 1e6 : stopHz ?? undefined)}
+              t0={waterfallBounds.t0}
+              t1={waterfallBounds.t1}
+              startHz={startHz}
+              stopHz={stopHz}
+              baseUnixTime={(metadata as any).unix0 ?? (metadata as any).time_start_unix ?? undefined}
+              vmin={waterfallVmin}
+              vmax={waterfallVmax}
+              onBoundsChange={(bounds) => {
+                // If bounds are undefined, reset to full range
+                if (bounds.f0 === undefined && bounds.f1 === undefined && bounds.t0 === undefined && bounds.t1 === undefined) {
+                  setWaterfallBounds({});
+                  setZoomRange(undefined);
+                } else {
+                  setWaterfallBounds(bounds);
+                  if (bounds.f0 !== undefined && bounds.f1 !== undefined) {
+                    setZoomRange([bounds.f0 / 1e6, bounds.f1 / 1e6]);
+                  }
+                }
+              }}
+            />
+          </>
         )}
       </section>
 
@@ -1376,7 +1653,7 @@ export default function SurveyBandDetailPage() {
             <button
               onClick={() => {
                 setAddRegionMode(true);
-                setRegionSelectionStart(null);
+                setEditingRegion(null);
               }}
               disabled={addRegionMode}
               style={{
@@ -1479,7 +1756,9 @@ export default function SurveyBandDetailPage() {
                 <thead>
                   <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Center (MHz)</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>OBW99 (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>BW (MHz)</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Presence</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Traces Hit</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Activity Peak</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Activity Mean</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 'bold' }}>Peak dBm</th>
@@ -1491,7 +1770,8 @@ export default function SurveyBandDetailPage() {
                   {signalCandidates.map((candidate, idx) => {
                     const isHighlighted = highlightedCandidateIndex === idx;
                     const centerMHz = candidate.center_freq_hz / 1e6;
-                    const obwMHz = (candidate.f_high_99_hz - candidate.f_low_99_hz) / 1e6;
+                    const obwHz = candidate.f_high_99_hz - candidate.f_low_99_hz;
+                    const obwMHz = obwHz / 1e6;
                     const startMHz = candidate.f_low_99_hz / 1e6;
                     const stopMHz = candidate.f_high_99_hz / 1e6;
                     
@@ -1515,9 +1795,27 @@ export default function SurveyBandDetailPage() {
                       >
                         <td style={{ padding: '0.75rem' }}>{centerMHz.toFixed(3)}</td>
                         <td style={{ padding: '0.75rem' }}>{obwMHz.toFixed(3)}</td>
-                        <td style={{ padding: '0.75rem' }}>{candidate.activity_peak.toFixed(3)}</td>
-                        <td style={{ padding: '0.75rem' }}>{candidate.activity_mean.toFixed(3)}</td>
-                        <td style={{ padding: '0.75rem' }}>{candidate.peak_dbm !== undefined && candidate.peak_dbm !== null ? candidate.peak_dbm.toFixed(1) : 'N/A'}</td>
+                        <td style={{ padding: '0.75rem' }}>
+                          {candidate.presence !== undefined ? `${(candidate.presence * 100).toFixed(1)}%` : 'N/A'}
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          {candidate.n_traces_hit !== undefined && candidate.n_traces_total !== undefined
+                            ? `${candidate.n_traces_hit}/${candidate.n_traces_total}`
+                            : 'N/A'}
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          {candidate.activity_peak !== undefined && candidate.activity_peak !== null
+                            ? candidate.activity_peak.toFixed(3)
+                            : 'N/A'}
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          {candidate.activity_mean !== undefined && candidate.activity_mean !== null
+                            ? candidate.activity_mean.toFixed(3)
+                            : 'N/A'}
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          {candidate.peak_dbm !== undefined && candidate.peak_dbm !== null ? candidate.peak_dbm.toFixed(1) : 'N/A'}
+                        </td>
                         <td style={{ padding: '0.75rem' }}>{startMHz.toFixed(3)}</td>
                         <td style={{ padding: '0.75rem' }}>{stopMHz.toFixed(3)}</td>
                       </tr>
@@ -1634,74 +1932,8 @@ export default function SurveyBandDetailPage() {
         </div>
       )}
 
-      <section style={{ padding: '1rem', marginTop: '2rem' }}>
-        <h2 style={{ color: '#f7f7f7', marginBottom: '1rem' }}>Metadata</h2>
-        <dl style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: '0.5rem 1rem', color: '#f7f7f7' }}>
-          <dt style={{ fontWeight: 'bold' }}>Band ID:</dt>
-          <dd>{metadata.band_id}</dd>
-          {metadata.band_label && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Band Label:</dt>
-              <dd>{metadata.band_label}</dd>
-            </>
-          )}
-          {metadata.n_traces !== null && metadata.n_traces !== undefined && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Traces:</dt>
-              <dd>{metadata.n_traces.toLocaleString()}</dd>
-            </>
-          )}
-          {metadata.start_hz !== null && metadata.start_hz !== undefined && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Start Frequency:</dt>
-              <dd>{formatFrequency(metadata.start_hz)}</dd>
-            </>
-          )}
-          {metadata.stop_hz !== null && metadata.stop_hz !== undefined && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Stop Frequency:</dt>
-              <dd>{formatFrequency(metadata.stop_hz)}</dd>
-            </>
-          )}
-          {metadata.step_hz !== null && metadata.step_hz !== undefined && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Step Frequency:</dt>
-              <dd>{formatFrequency(metadata.step_hz)}</dd>
-            </>
-          )}
-          {metadata.n_freqs !== undefined && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Frequency Bins:</dt>
-              <dd>{metadata.n_freqs.toLocaleString()}</dd>
-            </>
-          )}
-          {metadata.site && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Site:</dt>
-              <dd>{metadata.site}</dd>
-            </>
-          )}
-          {metadata.mission_type && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Mission Type:</dt>
-              <dd>{metadata.mission_type}</dd>
-            </>
-          )}
-          {metadata.sensor && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Sensor:</dt>
-              <dd>{metadata.sensor}</dd>
-            </>
-          )}
-          {metadata.run_ids && metadata.run_ids.length > 0 && (
-            <>
-              <dt style={{ fontWeight: 'bold' }}>Run IDs:</dt>
-              <dd>{metadata.run_ids.join(', ')}</dd>
-            </>
-          )}
-        </dl>
-      </section>
-    </main>
+      </main>
+    </div>
   );
 }
 

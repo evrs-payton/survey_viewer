@@ -24,15 +24,21 @@ def test_get_signal_candidates_response_shape():
         assert "center_freq_hz" in candidate
         assert "f_low_99_hz" in candidate
         assert "f_high_99_hz" in candidate
-        assert "activity_peak" in candidate
-        assert "activity_mean" in candidate
+        # Legacy candidates include activity_peak/activity_mean; tracewise may not
+        if "activity_peak" in candidate:
+            assert "activity_mean" in candidate
+        if "presence" in candidate:
+            assert "n_traces_hit" in candidate
+            assert "n_traces_total" in candidate
         
         # Check types are JSON-safe (int/float, not numpy types)
         assert isinstance(candidate["center_freq_hz"], (int, float))
         assert isinstance(candidate["f_low_99_hz"], (int, float))
         assert isinstance(candidate["f_high_99_hz"], (int, float))
-        assert isinstance(candidate["activity_peak"], (int, float))
-        assert isinstance(candidate["activity_mean"], (int, float))
+        if candidate.get("activity_peak") is not None:
+            assert isinstance(candidate["activity_peak"], (int, float))
+        if candidate.get("activity_mean") is not None:
+            assert isinstance(candidate["activity_mean"], (int, float))
 
 
 @pytest.mark.skip(reason="Requires MinIO connection and test data")
