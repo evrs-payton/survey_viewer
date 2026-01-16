@@ -16,6 +16,7 @@ export interface WaterfallProps {
   baseUnixTime?: number;
   vmin?: number;
   vmax?: number;
+  downsample?: 'mean' | 'max';
   onBoundsChange?: (
     bounds: { f0: number; f1: number; t0: number; t1: number },
     source: 'user'
@@ -63,6 +64,7 @@ export function Waterfall({
   baseUnixTime: propBaseUnixTime,
   vmin,
   vmax,
+  downsample,
   onBoundsChange
 }: WaterfallProps) {
   const [tile, setTile] = useState<TileState | null>(null);
@@ -96,6 +98,7 @@ export function Waterfall({
           fmt: 'png',
           vmin,
           vmax,
+          downsample,
           // Don't pass level_id - let backend automatically select based on zoom level
         });
         if (cancelled) return;
@@ -143,6 +146,7 @@ export function Waterfall({
           t1,
           maxw,
           maxt,
+          downsample,
         });
         if (cancelled) return;
         setIntensityData(data);
@@ -159,7 +163,7 @@ export function Waterfall({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [surveyId, bandId, f0, f1, t0, t1, maxw, maxt, vmin, vmax]);
+  }, [surveyId, bandId, f0, f1, t0, t1, maxw, maxt, vmin, vmax, downsample]);
 
   // Track container width to compute integer scaling height and avoid subpixel gaps
   useEffect(() => {

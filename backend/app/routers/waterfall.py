@@ -28,6 +28,7 @@ def get_waterfall_tile(
     level_id: Optional[str] = Query(None, description="Optional waterfall level id"),
     vmin: Optional[float] = Query(None, description="Minimum value for color scale (dBm)"),
     vmax: Optional[float] = Query(None, description="Maximum value for color scale (dBm)"),
+    downsample: str = Query("mean", description="Downsample mode: mean or max"),
     fmt: str = Query("png", description="Response format: png or json"),
 ) -> Response:
     """Return a PNG tile for waterfall visualization."""
@@ -43,6 +44,7 @@ def get_waterfall_tile(
                 maxw=maxw,
                 maxt=maxt,
                 level_id=level_id,
+                downsample_mode=downsample,
             )
             return JSONResponse(content=payload)
         png_bytes, headers = _data_source.get_waterfall_tile(
@@ -57,6 +59,7 @@ def get_waterfall_tile(
             level_id=level_id,
             vmin=vmin,
             vmax=vmax,
+            downsample_mode=downsample,
         )
         return Response(content=png_bytes, media_type="image/png", headers=headers)
     except ValueError as exc:

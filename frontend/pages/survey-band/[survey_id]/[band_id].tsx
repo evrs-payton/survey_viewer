@@ -82,6 +82,7 @@ export default function SurveyBandDetailPage() {
   const [showWaterfall, setShowWaterfall] = useState<boolean>(true);
   const [waterfallVmin, setWaterfallVmin] = useState<number | undefined>(undefined);
   const [waterfallVmax, setWaterfallVmax] = useState<number | undefined>(undefined);
+  const [waterfallDownsample, setWaterfallDownsample] = useState<'mean' | 'max'>('mean');
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
@@ -1162,6 +1163,30 @@ export default function SurveyBandDetailPage() {
                 {showWaterfall && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginLeft: '1.5rem', marginTop: '0.5rem' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <label htmlFor="waterfall-downsample" style={{ color: '#f7f7f7', fontSize: '0.85rem' }}>
+                        Downsample: {waterfallDownsample === 'max' ? 'Max (preserve peaks)' : 'Mean'}
+                      </label>
+                      <select
+                        id="waterfall-downsample"
+                        value={waterfallDownsample}
+                        onChange={(e) => {
+                          const value = e.target.value === 'max' ? 'max' : 'mean';
+                          setWaterfallDownsample(value);
+                        }}
+                        style={{
+                          padding: '0.4rem',
+                          background: '#1a1d29',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          borderRadius: '0.25rem',
+                          color: '#f7f7f7',
+                          fontSize: '0.85rem',
+                        }}
+                      >
+                        <option value="mean">Mean (smooth)</option>
+                        <option value="max">Max (preserve peaks)</option>
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                       <label htmlFor="waterfall-vmin" style={{ color: '#f7f7f7', fontSize: '0.85rem' }}>
                         Color Scale Min: {waterfallVmin !== undefined ? waterfallVmin.toFixed(1) : 'Auto'}
                       </label>
@@ -1486,6 +1511,7 @@ export default function SurveyBandDetailPage() {
               baseUnixTime={(metadata as any).unix0 ?? (metadata as any).time_start_unix ?? undefined}
               vmin={waterfallVmin}
               vmax={waterfallVmax}
+                downsample={waterfallDownsample}
               onBoundsChange={(bounds) => {
                 // If bounds are undefined, reset to full range
                 if (bounds.f0 === undefined && bounds.f1 === undefined && bounds.t0 === undefined && bounds.t1 === undefined) {

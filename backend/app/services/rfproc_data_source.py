@@ -927,6 +927,7 @@ class RfprocGoldSilverDataSource:
         maxw: int,
         maxt: int,
         level_id: Optional[str] = None,
+        downsample_mode: str = "mean",
     ) -> Tuple[np.ndarray, Dict[str, str], Dict[str, float | int | str | None]]:
         """Build waterfall intensity grid and metadata for a band."""
         parts = survey_id.split(":")
@@ -1096,7 +1097,12 @@ class RfprocGoldSilverDataSource:
 
         grid = grid[:, start_freq_idx:end_freq_idx]
 
-        # Downsample using block averaging with padding to avoid aliasing artifacts and seams
+        downsample_mode = (downsample_mode or "mean").lower().strip()
+        if downsample_mode not in ("mean", "max"):
+            raise ValueError(f"Invalid downsample_mode: {downsample_mode} (expected 'mean' or 'max')")
+        reduce_fn = np.nanmean if downsample_mode == "mean" else np.nanmax
+
+        # Downsample using block reduction with padding to avoid aliasing artifacts and seams
         if grid.shape[0] > maxt:
             block_size = max(1, int(math.ceil(grid.shape[0] / maxt)))
             n_blocks = int(math.ceil(grid.shape[0] / block_size))
@@ -1104,7 +1110,7 @@ class RfprocGoldSilverDataSource:
             if pad_rows > 0:
                 grid = np.pad(grid, ((0, pad_rows), (0, 0)), mode="constant", constant_values=np.nan)
             reshaped = grid.reshape(n_blocks, block_size, -1)
-            grid = np.nanmean(reshaped, axis=1)
+            grid = reduce_fn(reshaped, axis=1)
         
         if grid.shape[1] > maxw:
             block_size = max(1, int(math.ceil(grid.shape[1] / maxw)))
@@ -1113,7 +1119,7 @@ class RfprocGoldSilverDataSource:
             if pad_cols > 0:
                 grid = np.pad(grid, ((0, 0), (0, pad_cols)), mode="constant", constant_values=np.nan)
             reshaped = grid.reshape(-1, n_blocks, block_size)
-            grid = np.nanmean(reshaped, axis=2)
+            grid = reduce_fn(reshaped, axis=2)
 
         time_start = start_time_idx * time_bin_sec
         time_end = min(total_duration_sec, (end_time_idx + 1) * time_bin_sec)
@@ -1171,6 +1177,7 @@ class RfprocGoldSilverDataSource:
         level_id: Optional[str] = None,
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
+        downsample_mode: str = "mean",
     ) -> Tuple[bytes, Dict[str, str]]:
         """Get a waterfall PNG tile for a band."""
         grid, headers, meta = self._build_waterfall_grid(
@@ -1183,6 +1190,7 @@ class RfprocGoldSilverDataSource:
             maxw=maxw,
             maxt=maxt,
             level_id=level_id,
+            downsample_mode=downsample_mode,
         )
         png_bytes, width, height = self._render_waterfall_image(
             grid,
@@ -1207,6 +1215,7 @@ class RfprocGoldSilverDataSource:
         maxw: int,
         maxt: int,
         level_id: Optional[str] = None,
+        downsample_mode: str = "mean",
     ) -> Dict[str, object]:
         """Get a waterfall tile intensity grid and metadata as JSON-friendly data."""
         grid, _headers, meta = self._build_waterfall_grid(
@@ -1219,6 +1228,7 @@ class RfprocGoldSilverDataSource:
             maxw=maxw,
             maxt=maxt,
             level_id=level_id,
+            downsample_mode=downsample_mode,
         )
         intensity_list = np.where(np.isnan(grid), None, grid).tolist()
         return {

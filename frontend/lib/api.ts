@@ -134,6 +134,7 @@ export interface WaterfallTileParams {
   level_id?: string;
   vmin?: number;
   vmax?: number;
+  downsample?: 'mean' | 'max';
 }
 
 export async function getWaterfallTile(
@@ -154,6 +155,7 @@ export async function getWaterfallTile(
   if (params.level_id) query.set('level_id', params.level_id);
   if (params.vmin !== undefined) query.set('vmin', params.vmin.toString());
   if (params.vmax !== undefined) query.set('vmax', params.vmax.toString());
+  if (params.downsample) query.set('downsample', params.downsample);
   const response = await fetch(`${API_BASE}/waterfall/tile?${query.toString()}`);
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
@@ -178,6 +180,7 @@ export async function getWaterfallTileData(
   if (params.maxt !== undefined) query.set('maxt', params.maxt.toString());
   query.set('fmt', 'json');
   if (params.level_id) query.set('level_id', params.level_id);
+  if (params.downsample) query.set('downsample', params.downsample);
   const response = await fetch(`${API_BASE}/waterfall/tile?${query.toString()}`);
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
