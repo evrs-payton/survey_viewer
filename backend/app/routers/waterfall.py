@@ -28,7 +28,7 @@ def get_waterfall_tile(
     level_id: Optional[str] = Query(None, description="Optional waterfall level id"),
     vmin: Optional[float] = Query(None, description="Minimum value for color scale (dBm)"),
     vmax: Optional[float] = Query(None, description="Maximum value for color scale (dBm)"),
-    downsample: str = Query("mean", description="Downsample mode: mean or max"),
+    downsample: str = Query("max", description="Downsample mode: mean or max"),
     fmt: str = Query("png", description="Response format: png or json"),
 ) -> Response:
     """Return a PNG tile for waterfall visualization."""

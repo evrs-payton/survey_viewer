@@ -82,7 +82,7 @@ export default function SurveyBandDetailPage() {
   const [showWaterfall, setShowWaterfall] = useState<boolean>(true);
   const [waterfallVmin, setWaterfallVmin] = useState<number | undefined>(undefined);
   const [waterfallVmax, setWaterfallVmax] = useState<number | undefined>(undefined);
-  const [waterfallDownsample, setWaterfallDownsample] = useState<'mean' | 'max'>('mean');
+  const [waterfallDownsample, setWaterfallDownsample] = useState<'mean' | 'max'>('max');
 
   const decodedSurveyId = survey_id ? decodeURIComponent(survey_id) : '';
   const decodedBandId = band_id ? decodeURIComponent(band_id) : '';
