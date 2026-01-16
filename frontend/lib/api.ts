@@ -130,7 +130,7 @@ export interface WaterfallTileParams {
   t1?: number;
   maxw?: number;
   maxt?: number;
-  fmt?: 'png';
+  fmt?: 'png' | 'json';
   level_id?: string;
   vmin?: number;
   vmax?: number;
@@ -150,6 +150,7 @@ export async function getWaterfallTile(
   if (params.t1 !== undefined) query.set('t1', params.t1.toString());
   if (params.maxw !== undefined) query.set('maxw', params.maxw.toString());
   if (params.maxt !== undefined) query.set('maxt', params.maxt.toString());
+  if (params.fmt) query.set('fmt', params.fmt);
   if (params.level_id) query.set('level_id', params.level_id);
   if (params.vmin !== undefined) query.set('vmin', params.vmin.toString());
   if (params.vmax !== undefined) query.set('vmax', params.vmax.toString());
@@ -159,6 +160,29 @@ export async function getWaterfallTile(
   }
   const blob = await response.blob();
   return { blob, headers: response.headers };
+}
+
+export async function getWaterfallTileData(
+  surveyId: string,
+  bandId: string,
+  params: WaterfallTileParams
+): Promise<{ intensity: Array<Array<number | null>>; meta: Record<string, number | string | null> }> {
+  const query = new URLSearchParams();
+  query.set('survey_id', surveyId);
+  query.set('band_id', bandId);
+  if (params.f0 !== undefined) query.set('f0', params.f0.toString());
+  if (params.f1 !== undefined) query.set('f1', params.f1.toString());
+  if (params.t0 !== undefined) query.set('t0', params.t0.toString());
+  if (params.t1 !== undefined) query.set('t1', params.t1.toString());
+  if (params.maxw !== undefined) query.set('maxw', params.maxw.toString());
+  if (params.maxt !== undefined) query.set('maxt', params.maxt.toString());
+  query.set('fmt', 'json');
+  if (params.level_id) query.set('level_id', params.level_id);
+  const response = await fetch(`${API_BASE}/waterfall/tile?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json();
 }
 
 export async function listSurveys(): Promise<SurveyInfo[]> {

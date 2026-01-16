@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { getWaterfallTile } from '../lib/api';
+import { getWaterfallTile, getWaterfallTileData } from '../lib/api';
 
 export interface WaterfallProps {
   surveyId: string;
@@ -31,6 +31,24 @@ interface TileState {
   baseUnixTime?: number;
 }
 
+interface IntensityMeta {
+  time_start?: number;
+  time_end?: number;
+  freq_start?: number;
+  freq_end?: number;
+  tile_width?: number;
+  tile_height?: number;
+  display_min_dbm?: number;
+  display_max_dbm?: number;
+  intensity_bits?: number;
+  base_unix_time?: number;
+}
+
+interface IntensityData {
+  intensity: Array<Array<number | null>>;
+  meta: IntensityMeta;
+}
+
 export function Waterfall({
   surveyId,
   bandId,
@@ -48,6 +66,7 @@ export function Waterfall({
   onBoundsChange
 }: WaterfallProps) {
   const [tile, setTile] = useState<TileState | null>(null);
+  const [intensityData, setIntensityData] = useState<IntensityData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -56,6 +75,7 @@ export function Waterfall({
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
   const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [hoverInfo, setHoverInfo] = useState<{ freq: number; time: number; dbm: number | null } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,6 +131,25 @@ export function Waterfall({
         });
         setError('Unable to load waterfall image.');
         setLoading(false);
+      }
+    })();
+
+    (async () => {
+      try {
+        const data = await getWaterfallTileData(surveyId, bandId, {
+          f0,
+          f1,
+          t0,
+          t1,
+          maxw,
+          maxt,
+        });
+        if (cancelled) return;
+        setIntensityData(data);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('Failed to load waterfall intensity data', err);
+        setIntensityData(null);
       }
     })();
 
@@ -236,6 +275,44 @@ export function Waterfall({
     return { f0: fStart, f1: fEnd, t0: tStart, t1: tEnd };
   }
 
+  function updateHoverInfo(event: { clientX: number; clientY: number }) {
+    const point = getLocalPoint(event);
+    if (!point || !tile) {
+      setHoverInfo(null);
+      return;
+    }
+    const xRatio = point.x / Math.max(1, point.width);
+    const yRatio = point.y / Math.max(1, point.height);
+    const freq = tile.freqStart + xRatio * (tile.freqEnd - tile.freqStart);
+    const time = tile.timeStart + yRatio * (tile.timeEnd - tile.timeStart);
+
+    let dbm: number | null = null;
+    if (intensityData?.intensity?.length) {
+      const rows = intensityData.intensity.length;
+      const cols = intensityData.intensity[0]?.length ?? 0;
+      if (rows > 0 && cols > 0) {
+        const row = Math.min(rows - 1, Math.max(0, Math.floor(yRatio * rows)));
+        const col = Math.min(cols - 1, Math.max(0, Math.floor(xRatio * cols)));
+        const value = intensityData.intensity[row]?.[col];
+        const displayMin = intensityData.meta.display_min_dbm;
+        const displayMax = intensityData.meta.display_max_dbm;
+        const intensityBits = intensityData.meta.intensity_bits ?? 16;
+        const maxIntensity = intensityBits === 8 ? 255 : 65535;
+        if (
+          typeof value === 'number' &&
+          Number.isFinite(value) &&
+          displayMin !== undefined &&
+          displayMax !== undefined &&
+          displayMax > displayMin
+        ) {
+          dbm = displayMin + (value / maxIntensity) * (displayMax - displayMin);
+        }
+      }
+    }
+
+    setHoverInfo({ freq, time, dbm });
+  }
+
   return (
     <div
       style={{
@@ -248,6 +325,16 @@ export function Waterfall({
         <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)' }}>
           Double-click to reset zoom
         </div>
+        {hoverInfo && (
+          <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.8)' }}>
+            {formatFrequencyAdaptive(hoverInfo.freq)} ·{' '}
+            {formatDateTime(
+              hoverInfo.time,
+              tile?.baseUnixTime ?? intensityData?.meta.base_unix_time
+            )}{' '}
+            · {hoverInfo.dbm !== null ? `${hoverInfo.dbm.toFixed(1)} dBm` : 'No data'}
+          </div>
+        )}
         {tile && (f0 !== undefined || f1 !== undefined || t0 !== undefined || t1 !== undefined) && onBoundsChange && (
           <button
             onClick={() => {
@@ -331,6 +418,7 @@ export function Waterfall({
               setDragCurrent({ x: local.x, y: local.y });
             }}
             onMouseMove={(event) => {
+              updateHoverInfo(event);
               if (!dragStart) return;
               const local = getLocalPoint(event);
               if (!local) return;
@@ -352,6 +440,7 @@ export function Waterfall({
             onMouseLeave={() => {
               setDragStart(null);
               setDragCurrent(null);
+              setHoverInfo(null);
             }}
             onDoubleClick={(event) => {
               // Reset zoom on double-click

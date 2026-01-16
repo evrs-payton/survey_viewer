@@ -821,14 +821,23 @@ class RfprocGoldSilverDataSource:
         return levels_sorted[0]
 
     def _render_waterfall_image(
-        self, intensity: np.ndarray, vmin: Optional[float] = None, vmax: Optional[float] = None
+        self, 
+        intensity: np.ndarray, 
+        vmin: Optional[float] = None, 
+        vmax: Optional[float] = None,
+        display_min_dbm: Optional[float] = None,
+        display_max_dbm: Optional[float] = None,
+        intensity_bits: int = 8
     ) -> Tuple[bytes, int, int]:
         """Render intensity grid to PNG bytes.
         
         Args:
             intensity: Intensity array (uint8 or uint16)
-            vmin: Optional minimum value for color scale (if None, use data min)
-            vmax: Optional maximum value for color scale (if None, use data max)
+            vmin: Optional minimum value for color scale in dBm (if None, use data min)
+            vmax: Optional maximum value for color scale in dBm (if None, use data max)
+            display_min_dbm: Original dBm minimum used for encoding (for converting vmin/vmax)
+            display_max_dbm: Original dBm maximum used for encoding (for converting vmin/vmax)
+            intensity_bits: Number of bits used for intensity encoding (8 or 16)
         """
         # Convert to float for normalization
         if intensity.dtype == np.uint16:
@@ -836,11 +845,36 @@ class RfprocGoldSilverDataSource:
         else:
             intensity_float = intensity.astype(np.float32, copy=False)
         
-        # Normalize based on vmin/vmax
+        # Calculate actual data range first (ignore NaNs from padding)
+        if np.isnan(intensity_float).all():
+            data_min = 0.0
+            data_max = 1.0
+        else:
+            data_min = float(np.nanmin(intensity_float))
+            data_max = float(np.nanmax(intensity_float))
+        
+        # If vmin/vmax are provided and we have dBm range info, convert dBm to intensity scale
+        if vmin is not None and display_min_dbm is not None and display_max_dbm is not None:
+            # User provided dBm value, convert to intensity scale
+            max_intensity = 255.0 if intensity_bits == 8 else 65535.0
+            if display_max_dbm > display_min_dbm:
+                # Convert dBm to intensity: intensity = ((dbm - min_dbm) / (max_dbm - min_dbm)) * max_intensity
+                vmin_intensity = ((vmin - display_min_dbm) / (display_max_dbm - display_min_dbm)) * max_intensity
+                vmin = max(0.0, min(max_intensity, vmin_intensity))
+        
+        if vmax is not None and display_min_dbm is not None and display_max_dbm is not None:
+            # User provided dBm value, convert to intensity scale
+            max_intensity = 255.0 if intensity_bits == 8 else 65535.0
+            if display_max_dbm > display_min_dbm:
+                # Convert dBm to intensity: intensity = ((dbm - min_dbm) / (max_dbm - min_dbm)) * max_intensity
+                vmax_intensity = ((vmax - display_min_dbm) / (display_max_dbm - display_min_dbm)) * max_intensity
+                vmax = max(0.0, min(max_intensity, vmax_intensity))
+        
+        # Use user-provided vmin/vmax if available, otherwise use data range
         if vmin is None:
-            vmin = float(np.min(intensity_float))
+            vmin = data_min
         if vmax is None:
-            vmax = float(np.max(intensity_float))
+            vmax = data_max
         
         # Avoid division by zero
         if vmax <= vmin:
@@ -848,6 +882,11 @@ class RfprocGoldSilverDataSource:
         
         # Normalize to 0-1 range
         normalized = np.clip((intensity_float - vmin) / (vmax - vmin), 0.0, 1.0)
+        # Treat NaNs (missing data) as low power -> black after inversion
+        normalized = np.nan_to_num(normalized, nan=0.0)
+        
+        # Invert so high values map to red (first color) and low values map to black (last color)
+        normalized = 1.0 - normalized
         
         # Convert to 0-255 range for colormap
         grid_8 = (normalized * 255.0).astype(np.uint8)
@@ -877,7 +916,7 @@ class RfprocGoldSilverDataSource:
         image.save(buf, format="PNG")
         return buf.getvalue(), image.width, image.height
 
-    def get_waterfall_tile(
+    def _build_waterfall_grid(
         self,
         survey_id: str,
         band_id: str,
@@ -888,10 +927,8 @@ class RfprocGoldSilverDataSource:
         maxw: int,
         maxt: int,
         level_id: Optional[str] = None,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
-    ) -> Tuple[bytes, Dict[str, str]]:
-        """Get a waterfall PNG tile for a band."""
+    ) -> Tuple[np.ndarray, Dict[str, str], Dict[str, float | int | str | None]]:
+        """Build waterfall intensity grid and metadata for a band."""
         parts = survey_id.split(":")
         if len(parts) != 4:
             raise ValueError(
@@ -915,27 +952,37 @@ class RfprocGoldSilverDataSource:
         if not band_info:
             raise ValueError(f"Band not found in run manifest: {band_id}")
 
-        silver_manifest_paths = band_info.get("silver_manifests", [])
-        waterfall_manifests = [
-            p for p in silver_manifest_paths if "/product=waterfall/" in p
-        ]
-
-        if not waterfall_manifests:
-            raise ValueError(f"No waterfall manifests found for band {band_id}")
-
-        manifest_candidates: List[Dict] = []
-        for manifest_path in waterfall_manifests:
-            manifest = _read_manifest(client, bucket, manifest_path)
-            if manifest:
-                manifest_candidates.append(manifest)
-
-        if not manifest_candidates:
-            raise ValueError(f"Waterfall manifests not readable for band {band_id}")
-
-        manifest_candidates.sort(
-            key=lambda m: int(m.get("time_end_unix_sec", 0)), reverse=True
+        # Prefer gold waterfall manifest if present
+        gold_manifest_path = (
+            f"gold/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/band_id={band_id}/product=waterfall/manifest.json"
         )
-        manifest = manifest_candidates[0]
+        gold_manifest = _read_manifest(client, bucket, gold_manifest_path)
+
+        if gold_manifest and gold_manifest.get("status") == "success":
+            manifest = gold_manifest
+        else:
+            silver_manifest_paths = band_info.get("silver_manifests", [])
+            waterfall_manifests = [
+                p for p in silver_manifest_paths if "/product=waterfall/" in p
+            ]
+
+            if not waterfall_manifests:
+                raise ValueError(f"No waterfall manifests found for band {band_id}")
+
+            manifest_candidates: List[Dict] = []
+            for manifest_path in waterfall_manifests:
+                manifest_candidate = _read_manifest(client, bucket, manifest_path)
+                if manifest_candidate:
+                    manifest_candidates.append(manifest_candidate)
+
+            if not manifest_candidates:
+                raise ValueError(f"Waterfall manifests not readable for band {band_id}")
+
+            manifest_candidates.sort(
+                key=lambda m: int(m.get("time_end_unix_sec", 0)), reverse=True
+            )
+            manifest = manifest_candidates[0]
 
         levels = manifest.get("levels", [])
         if not levels:
@@ -1031,7 +1078,16 @@ class RfprocGoldSilverDataSource:
         if hasattr(intensity_col, "combine_chunks"):
             intensity_col = intensity_col.combine_chunks()
         intensity_values = intensity_col.values.to_numpy(zero_copy_only=False)
-        grid = intensity_values.reshape((n_rows, n_freq_bins))
+        intensity_rows = intensity_values.reshape((n_rows, n_freq_bins))
+        time_indices = table["time_bin_index"].to_numpy(zero_copy_only=False)
+        full_rows = max(1, end_time_idx - start_time_idx + 1)
+        grid = np.full((full_rows, n_freq_bins), np.nan, dtype=np.float32)
+        row_indices = time_indices - start_time_idx
+        valid_mask = (row_indices >= 0) & (row_indices < full_rows)
+        if np.any(valid_mask):
+            grid[row_indices[valid_mask]] = intensity_rows[valid_mask]
+        else:
+            grid[: min(full_rows, n_rows)] = intensity_rows[: min(full_rows, n_rows)]
 
         start_freq_idx = max(0, min(start_freq_idx, n_freq_bins))
         end_freq_idx = max(0, min(end_freq_idx, n_freq_bins))
@@ -1040,19 +1096,35 @@ class RfprocGoldSilverDataSource:
 
         grid = grid[:, start_freq_idx:end_freq_idx]
 
+        # Downsample using block averaging with padding to avoid aliasing artifacts and seams
         if grid.shape[0] > maxt:
-            stride = max(1, int(math.ceil(grid.shape[0] / maxt)))
-            grid = grid[::stride]
+            block_size = max(1, int(math.ceil(grid.shape[0] / maxt)))
+            n_blocks = int(math.ceil(grid.shape[0] / block_size))
+            pad_rows = n_blocks * block_size - grid.shape[0]
+            if pad_rows > 0:
+                grid = np.pad(grid, ((0, pad_rows), (0, 0)), mode="constant", constant_values=np.nan)
+            reshaped = grid.reshape(n_blocks, block_size, -1)
+            grid = np.nanmean(reshaped, axis=1)
+        
         if grid.shape[1] > maxw:
-            stride = max(1, int(math.ceil(grid.shape[1] / maxw)))
-            grid = grid[:, ::stride]
-
-        png_bytes, width, height = self._render_waterfall_image(grid, vmin=vmin, vmax=vmax)
+            block_size = max(1, int(math.ceil(grid.shape[1] / maxw)))
+            n_blocks = int(math.ceil(grid.shape[1] / block_size))
+            pad_cols = n_blocks * block_size - grid.shape[1]
+            if pad_cols > 0:
+                grid = np.pad(grid, ((0, 0), (0, pad_cols)), mode="constant", constant_values=np.nan)
+            reshaped = grid.reshape(-1, n_blocks, block_size)
+            grid = np.nanmean(reshaped, axis=2)
 
         time_start = start_time_idx * time_bin_sec
         time_end = min(total_duration_sec, (end_time_idx + 1) * time_bin_sec)
         freq_start = start_hz + start_freq_idx * freq_group_hz
         freq_end = start_hz + end_freq_idx * freq_group_hz
+
+        display_min_dbm = level.get("display_min_dbm")
+        display_max_dbm = level.get("display_max_dbm")
+        intensity_bits = int(manifest.get("intensity_bits", 16))
+        height = int(grid.shape[0])
+        width = int(grid.shape[1])
 
         headers = {
             "X-Time-Start": str(time_start),
@@ -1064,5 +1136,92 @@ class RfprocGoldSilverDataSource:
             "X-Waterfall-Level-Id": str(level.get("level_id")),
             "X-Waterfall-Time-Bin-Sec": str(level.get("time_bin_sec")),
             "X-Waterfall-Freq-Group-Size": str(level.get("freq_group_size")),
+            "X-Display-Min-Dbm": "" if display_min_dbm is None else str(display_min_dbm),
+            "X-Display-Max-Dbm": "" if display_max_dbm is None else str(display_max_dbm),
+            "X-Intensity-Bits": str(intensity_bits),
+            "X-Base-Unix-Time": str(int(time_start_unix)),
         }
+        meta: Dict[str, float | int | str | None] = {
+            "time_start": time_start,
+            "time_end": time_end,
+            "freq_start": freq_start,
+            "freq_end": freq_end,
+            "tile_width": width,
+            "tile_height": height,
+            "level_id": str(level.get("level_id")),
+            "time_bin_sec": float(level.get("time_bin_sec", 0)),
+            "freq_group_size": int(level.get("freq_group_size", 0)),
+            "display_min_dbm": display_min_dbm,
+            "display_max_dbm": display_max_dbm,
+            "intensity_bits": intensity_bits,
+            "base_unix_time": int(time_start_unix),
+        }
+        return grid, headers, meta
+
+    def get_waterfall_tile(
+        self,
+        survey_id: str,
+        band_id: str,
+        f0: Optional[float],
+        f1: Optional[float],
+        t0: Optional[float],
+        t1: Optional[float],
+        maxw: int,
+        maxt: int,
+        level_id: Optional[str] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+    ) -> Tuple[bytes, Dict[str, str]]:
+        """Get a waterfall PNG tile for a band."""
+        grid, headers, meta = self._build_waterfall_grid(
+            survey_id=survey_id,
+            band_id=band_id,
+            f0=f0,
+            f1=f1,
+            t0=t0,
+            t1=t1,
+            maxw=maxw,
+            maxt=maxt,
+            level_id=level_id,
+        )
+        png_bytes, width, height = self._render_waterfall_image(
+            grid,
+            vmin=vmin,
+            vmax=vmax,
+            display_min_dbm=meta.get("display_min_dbm") if isinstance(meta, dict) else None,
+            display_max_dbm=meta.get("display_max_dbm") if isinstance(meta, dict) else None,
+            intensity_bits=int(meta.get("intensity_bits", 16)) if isinstance(meta, dict) else 16,
+        )
+        headers["X-Tile-Width"] = str(width)
+        headers["X-Tile-Height"] = str(height)
         return png_bytes, headers
+
+    def get_waterfall_tile_data(
+        self,
+        survey_id: str,
+        band_id: str,
+        f0: Optional[float],
+        f1: Optional[float],
+        t0: Optional[float],
+        t1: Optional[float],
+        maxw: int,
+        maxt: int,
+        level_id: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """Get a waterfall tile intensity grid and metadata as JSON-friendly data."""
+        grid, _headers, meta = self._build_waterfall_grid(
+            survey_id=survey_id,
+            band_id=band_id,
+            f0=f0,
+            f1=f1,
+            t0=t0,
+            t1=t1,
+            maxw=maxw,
+            maxt=maxt,
+            level_id=level_id,
+        )
+        intensity_list = np.where(np.isnan(grid), None, grid).tolist()
+        return {
+            "intensity": intensity_list,
+            "meta": meta,
+        }

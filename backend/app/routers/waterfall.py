@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 
 from ..services.rfproc_data_source import RfprocGoldSilverDataSource
 
@@ -25,11 +26,25 @@ def get_waterfall_tile(
     maxw: int = Query(1600, ge=1, le=8192, description="Max tile width"),
     maxt: int = Query(600, ge=1, le=8192, description="Max tile height"),
     level_id: Optional[str] = Query(None, description="Optional waterfall level id"),
-    vmin: Optional[float] = Query(None, description="Minimum value for color scale"),
-    vmax: Optional[float] = Query(None, description="Maximum value for color scale"),
+    vmin: Optional[float] = Query(None, description="Minimum value for color scale (dBm)"),
+    vmax: Optional[float] = Query(None, description="Maximum value for color scale (dBm)"),
+    fmt: str = Query("png", description="Response format: png or json"),
 ) -> Response:
     """Return a PNG tile for waterfall visualization."""
     try:
+        if fmt == "json":
+            payload = _data_source.get_waterfall_tile_data(
+                survey_id=survey_id,
+                band_id=band_id,
+                f0=f0,
+                f1=f1,
+                t0=t0,
+                t1=t1,
+                maxw=maxw,
+                maxt=maxt,
+                level_id=level_id,
+            )
+            return JSONResponse(content=payload)
         png_bytes, headers = _data_source.get_waterfall_tile(
             survey_id=survey_id,
             band_id=band_id,
