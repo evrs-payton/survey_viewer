@@ -1040,9 +1040,30 @@ class RfprocGoldSilverDataSource:
         if level is None:
             raise ValueError("No suitable waterfall level found")
 
-        data_object = level.get("data_object")
-        if not data_object:
-            raise ValueError("Waterfall level missing data_object")
+        # Determine whether this manifest is a gold run-level waterfall.
+        manifest_kind = str(manifest.get("manifest_kind", ""))
+        is_gold_waterfall = manifest_kind == "gold_run_waterfall"
+
+        # For gold waterfalls, prefer sharded levels if present; otherwise fall back to single data_object.
+        # For non-gold (silver) waterfalls, keep existing single-data_object behavior.
+        data_objects: list[str] = []
+        if is_gold_waterfall:
+            shards = level.get("shards")
+            if isinstance(shards, list) and shards:
+                for shard in shards:
+                    obj = shard.get("data_object")
+                    if obj:
+                        data_objects.append(obj)
+            if not data_objects:
+                data_object = level.get("data_object")
+                if not data_object:
+                    raise ValueError("Waterfall level missing data_object / shards")
+                data_objects = [str(data_object)]
+        else:
+            data_object = level.get("data_object")
+            if not data_object:
+                raise ValueError("Waterfall level missing data_object")
+            data_objects = [str(data_object)]
 
         freq_group_size = int(level.get("freq_group_size", 1))
         time_bin_sec = float(level.get("time_bin_sec", 1.0))
@@ -1055,7 +1076,9 @@ class RfprocGoldSilverDataSource:
         end_freq_idx = int(math.ceil((f1_hz - start_hz) / freq_group_hz))
 
         con = get_connection()
-        data_path = f"s3://{bucket}/{data_object}"
+        # DuckDB read_parquet can accept a single path or a list of paths. For gold waterfalls
+        # we may have multiple shard parquet objects; for silver we will typically have one.
+        data_paths = [f"s3://{bucket}/{obj}" for obj in data_objects]
         query = """
         SELECT time_bin_index, intensity
         FROM read_parquet($1)
@@ -1065,7 +1088,7 @@ class RfprocGoldSilverDataSource:
         try:
             table = con.execute(
                 query,
-                [data_path, start_time_idx, end_time_idx],
+                [data_paths, start_time_idx, end_time_idx],
             ).fetch_arrow_table()
         except Exception as e:
             raise ValueError(f"Failed to read waterfall parquet data: {e}")
