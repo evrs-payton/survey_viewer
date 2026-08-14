@@ -31,11 +31,11 @@ echo ""
 
 # Build frontend
 echo "Building frontend image..."
-docker build -f frontend/Dockerfile -t "$FRONTEND_IMAGE" .
+docker build --platform linux/amd64 -f frontend/Dockerfile -t "$FRONTEND_IMAGE" .
 
 # Build backend
 echo "Building backend image..."
-docker build -f backend/Dockerfile -t "$BACKEND_IMAGE" .
+docker build --platform linux/amd64 -f backend/Dockerfile -t "$BACKEND_IMAGE" .
 
 # Push frontend
 echo "Pushing frontend image..."

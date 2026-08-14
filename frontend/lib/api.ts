@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? '/api/proxy';
 
 export async function fetchJSON<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
@@ -158,7 +158,9 @@ export async function getWaterfallTile(
   if (params.downsample) query.set('downsample', params.downsample);
   const response = await fetch(`${API_BASE}/waterfall/tile?${query.toString()}`);
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    let detail = `Request failed: ${response.status}`;
+    try { const j = await response.json(); if (j?.detail) detail = j.detail; } catch {}
+    throw new Error(detail);
   }
   const blob = await response.blob();
   return { blob, headers: response.headers };
@@ -371,4 +373,28 @@ export async function getSignalCandidates(
     query.set('max_candidates', maxCandidates.toString());
   }
   return fetchJSON<SignalCandidate[]>(`/signals/candidates?${query.toString()}`);
+}
+
+export async function reanalyzeSignalCandidates(
+  site: string,
+  missionType: string,
+  sensor: string,
+  runId: string,
+  bandId: string,
+  minPresence: number,
+  minBandwidthHz: number,
+  wideThreshold: number,
+  wideMinBwHz: number
+): Promise<SignalCandidate[]> {
+  const query = new URLSearchParams();
+  query.set('site', site);
+  query.set('mission_type', missionType);
+  query.set('sensor', sensor);
+  query.set('run_id', runId);
+  query.set('band_id', bandId);
+  query.set('min_presence', minPresence.toString());
+  query.set('min_bandwidth_hz', minBandwidthHz.toString());
+  query.set('wide_threshold', wideThreshold.toString());
+  query.set('wide_min_bw_hz', wideMinBwHz.toString());
+  return fetchJSON<SignalCandidate[]>(`/signals/reanalyze?${query.toString()}`);
 }

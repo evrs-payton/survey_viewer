@@ -132,7 +132,7 @@ export function Waterfall({
           }
           return null;
         });
-        setError('Unable to load waterfall image.');
+        setError(err instanceof Error ? err.message : 'Unable to load waterfall image.');
         setLoading(false);
       }
     })();

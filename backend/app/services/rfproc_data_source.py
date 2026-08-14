@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -218,23 +219,39 @@ class RfprocGoldSilverDataSource:
                 },
             }
             
-            # Extract capture_duration_sec_active from silver manifests
+            # Extract capture_duration_sec_active from silver manifests.
+            # Multiple products (holds_partial, signal_activity, waterfall) share the same
+            # value per day (all copied from the same bronze manifest), so deduplicate by
+            # day-key to avoid counting each day's duration once per product.
             silver_manifest_paths = band_info.get("silver_manifests", [])
-            capture_durations = []
-            
+            capture_durations_by_day = {}
+
             for manifest_path in silver_manifest_paths:
+                # Extract day key from path (year=YYYY/month=MM/day=DD)
+                day_match = re.search(r'(year=\d+/month=\d+/day=\d+)', manifest_path)
+                day_key = day_match.group(1) if day_match else manifest_path
+                if day_key in capture_durations_by_day:
+                    continue
                 silver_manifest = _read_manifest(client, bucket, manifest_path)
                 if silver_manifest:
                     capture_duration = silver_manifest.get("capture_duration_sec_active")
                     if capture_duration is not None:
                         try:
-                            capture_durations.append(float(capture_duration))
+                            val = float(capture_duration)
+                            # 1.0 is the safety floor applied when scan interval exceeds the
+                            # gap threshold (slow-scanning bands). Fall back to coverage
+                            # duration so the display isn't misleadingly tiny.
+                            if val <= 1.0:
+                                coverage = silver_manifest.get("coverage_duration_sec")
+                                if coverage is not None:
+                                    val = float(coverage)
+                            capture_durations_by_day[day_key] = val
                         except (ValueError, TypeError):
                             pass
-            
-            # Aggregate capture durations: sum if multiple days
-            if capture_durations:
-                band_dict["capture_duration_sec_active"] = sum(capture_durations)
+
+            # Aggregate capture durations: sum one value per day
+            if capture_durations_by_day:
+                band_dict["capture_duration_sec_active"] = sum(capture_durations_by_day.values())
             
             result.append(band_dict)
 
@@ -1081,7 +1098,7 @@ class RfprocGoldSilverDataSource:
         data_paths = [f"s3://{bucket}/{obj}" for obj in data_objects]
         query = """
         SELECT time_bin_index, intensity
-        FROM read_parquet($1)
+        FROM read_parquet($1, hive_partitioning=false)
         WHERE time_bin_index >= $2 AND time_bin_index <= $3
         ORDER BY time_bin_index ASC
         """
@@ -1258,3 +1275,173 @@ class RfprocGoldSilverDataSource:
             "intensity": intensity_list,
             "meta": meta,
         }
+
+    def reanalyze_signal_candidates(
+        self,
+        survey_id: str,
+        band_id: str,
+        min_presence: float = 0.05,
+        min_bandwidth_hz: float = 5000.0,
+        wide_threshold: float = 0.90,
+        wide_min_bw_hz: float = 100000.0,
+    ) -> List[Dict]:
+        """Re-filter stored candidates and rerun wide-signal detection with custom thresholds.
+
+        Loads stored CFAR candidates, applies presence/bandwidth filters, then reruns
+        the wide-signal pass against the gold signal_activity array with the given threshold.
+        No bronze reprocessing — fast enough for interactive use.
+        """
+        # Load stored candidates (returns empty list if not found, raises on other errors)
+        try:
+            all_candidates = self.get_signal_candidates_tracewise(
+                survey_id=survey_id,
+                band_id=band_id,
+            )
+        except ValueError as exc:
+            if "not found" in str(exc).lower() or "missing data_object" in str(exc).lower():
+                all_candidates = []
+            else:
+                raise
+
+        # Apply post-processing filters to stored candidates
+        filtered = [
+            c for c in all_candidates
+            if (c.get("presence") is None or c["presence"] >= min_presence)
+            and (c.get("bw_hz") is None or c["bw_hz"] >= min_bandwidth_hz)
+        ]
+
+        # Load gold signal_activity for the activity_fraction array and axis info
+        try:
+            activity_resp = self.get_signal_activity(survey_id=survey_id, band_id=band_id)
+        except ValueError:
+            # No activity data — return filtered candidates only
+            return sorted(filtered, key=lambda c: c.get("center_freq_hz") or 0)
+
+        activity = np.array(activity_resp["activity"], dtype=np.float32)
+        n_freqs = len(activity)
+        if n_freqs == 0:
+            return sorted(filtered, key=lambda c: c.get("center_freq_hz") or 0)
+
+        # Reconstruct axis from metadata
+        meta = activity_resp.get("metadata", {})
+        # get_signal_activity does not expose start_hz/step_hz directly; re-read manifest
+        parts = survey_id.split(":")
+        if len(parts) != 4:
+            return sorted(filtered, key=lambda c: c.get("center_freq_hz") or 0)
+        mission_type, site, sensor, run_id = parts
+
+        client = get_minio_client()
+        bucket = bucket_name()
+        gold_manifest_path = (
+            f"gold/mission_type={mission_type}/site={site}/sensor={sensor}/"
+            f"run_id={run_id}/band_id={band_id}/product=signal_activity/manifest.json"
+        )
+        gold_manifest = _read_manifest(client, bucket, gold_manifest_path)
+        if not gold_manifest:
+            return sorted(filtered, key=lambda c: c.get("center_freq_hz") or 0)
+
+        start_hz = float(gold_manifest.get("start_hz", 0))
+        step_hz = float(gold_manifest.get("step_hz", 0))
+        n_traces = int(gold_manifest.get("n_traces_total", 0))
+        if step_hz <= 0:
+            return sorted(filtered, key=lambda c: c.get("center_freq_hz") or 0)
+
+        wide_candidates = _detect_wide_signals(
+            activity=activity,
+            start_hz=start_hz,
+            step_hz=step_hz,
+            n_traces=n_traces,
+            threshold=wide_threshold,
+            min_bw_hz=wide_min_bw_hz,
+        )
+
+        # Merge: add wide candidates that don't substantially overlap with stored ones
+        merged = list(filtered)
+        for wc in wide_candidates:
+            overlaps = any(
+                _iou(
+                    wc["f_low_99_hz"], wc["f_high_99_hz"],
+                    c.get("f_low_99_hz", c.get("f_lo_hz", 0)),
+                    c.get("f_high_99_hz", c.get("f_hi_hz", 0)),
+                ) >= 0.3
+                for c in filtered
+            )
+            if not overlaps:
+                merged.append(wc)
+
+        merged.sort(key=lambda c: c.get("center_freq_hz") or 0)
+        return merged
+
+
+def _detect_wide_signals(
+    activity: np.ndarray,
+    start_hz: float,
+    step_hz: float,
+    n_traces: int,
+    threshold: float,
+    min_bw_hz: float,
+) -> List[Dict]:
+    """Find contiguous regions in activity_fraction above threshold with width >= min_bw_hz."""
+    active = (activity >= threshold)
+    n = len(active)
+
+    # Fill 1-bin gaps: [T, F, T] -> [T, T, T]
+    if n >= 3:
+        for i in range(1, n - 1):
+            if active[i - 1] and not active[i] and active[i + 1]:
+                active[i] = True
+
+    # Remove 1-bin islands: [F, T, F] -> [F, F, F]
+    if n >= 3:
+        cleaned = active.copy()
+        for i in range(n):
+            if active[i]:
+                left = i > 0 and active[i - 1]
+                right = i < n - 1 and active[i + 1]
+                if not left and not right:
+                    cleaned[i] = False
+        active = cleaned
+
+    candidates: List[Dict] = []
+    i = 0
+    while i < n:
+        if active[i]:
+            j = i + 1
+            while j < n and active[j]:
+                j += 1
+            lo_hz = start_hz + i * step_hz
+            hi_hz = start_hz + j * step_hz
+            bw = hi_hz - lo_hz
+            if bw >= min_bw_hz:
+                center = (lo_hz + hi_hz) / 2.0
+                seg = activity[i:j]
+                presence = float(np.mean(seg)) if len(seg) > 0 else threshold
+                candidates.append({
+                    "center_freq_hz": center,
+                    "f_low_99_hz": lo_hz,
+                    "f_high_99_hz": hi_hz,
+                    "bw_hz": bw,
+                    "presence": presence,
+                    "n_traces_hit": int(round(presence * n_traces)),
+                    "n_traces_total": n_traces,
+                    "center_p10_hz": center,
+                    "center_p90_hz": center,
+                    "bw_p10_hz": bw,
+                    "bw_p90_hz": bw,
+                })
+            i = j
+        else:
+            i += 1
+
+    return candidates
+
+
+def _iou(lo1: float, hi1: float, lo2: float, hi2: float) -> float:
+    """Intersection-over-union for two frequency intervals."""
+    inter_lo = max(lo1, lo2)
+    inter_hi = min(hi1, hi2)
+    if inter_hi <= inter_lo:
+        return 0.0
+    inter = inter_hi - inter_lo
+    union = max(hi1, hi2) - min(lo1, lo2)
+    return inter / union if union > 0 else 0.0

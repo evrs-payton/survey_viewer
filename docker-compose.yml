@@ -34,8 +34,18 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     environment:
-      - NEXT_PUBLIC_API_BASE=http://localhost:8000
+      - NEXT_PUBLIC_API_BASE=/api/proxy
       - NEXT_TELEMETRY_DISABLED=1
+      # Internal backend URL — server-side only, used by the Next.js proxy route.
+      - INTERNAL_API_URL=http://backend:8000
+      # Auth.js / NextAuth — OIDC via Authentik
+      # Set these via .env file or host environment; do NOT hard-code secrets here.
+      - NEXTAUTH_URL=${AUTH_URL:-https://rfexplorer.evrslab.com}
+      - NEXTAUTH_SECRET=${AUTH_SECRET}
+      - AUTH_SECRET=${AUTH_SECRET}
+      - AUTH_AUTHENTIK_ID=${AUTH_AUTHENTIK_ID}
+      - AUTH_AUTHENTIK_SECRET=${AUTH_AUTHENTIK_SECRET}
+      - AUTH_AUTHENTIK_ISSUER=${AUTH_AUTHENTIK_ISSUER:-https://auth.evrslab.com/application/o/rfexplorer}
     volumes:
       - ./frontend:/app
       - /app/node_modules

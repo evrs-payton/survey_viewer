@@ -3,10 +3,10 @@ import { useRouter } from 'next/router';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { Layout, PlotData } from 'plotly.js';
 
-import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, getSignalActivity, getActivityRegions, getSignalCandidates, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion, type SignalActivityResponse, type ActivityRegionsResponse, type SignalCandidate } from '../../../lib/api';
+import { getAssignmentOverlays, getSurveyHolds, getManualRegions, createManualRegion, deleteManualRegion, getSignalActivity, getActivityRegions, getSignalCandidates, reanalyzeSignalCandidates, type AssignmentOverlay, type SurveyHoldsResponse, type ManualRegion, type SignalActivityResponse, type ActivityRegionsResponse, type SignalCandidate } from '../../../lib/api';
 import Waterfall from '../../../components/Waterfall';
 
-const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
+const Plot = dynamic(() => import('react-plotly.js'), { ssr: false }) as any;
 
 type Status = 'idle' | 'loading' | 'error' | 'ready';
 
@@ -74,6 +74,15 @@ export default function SurveyBandDetailPage() {
   const [signalCandidatesLoading, setSignalCandidatesLoading] = useState<boolean>(false);
   const [signalCandidatesError, setSignalCandidatesError] = useState<string | null>(null);
   const [highlightedCandidateIndex, setHighlightedCandidateIndex] = useState<number | null>(null);
+  const [showDetectionParams, setShowDetectionParams] = useState<boolean>(false);
+
+  // Detection threshold controls
+  const [minPresence, setMinPresence] = useState<number>(0.05);
+  const [minBandwidthHz, setMinBandwidthHz] = useState<number>(5000);
+  const [wideThreshold, setWideThreshold] = useState<number>(0.90);
+  const [wideMinBwHz, setWideMinBwHz] = useState<number>(100000);
+  const [reanalyzeLoading, setReanalyzeLoading] = useState<boolean>(false);
+  const [reanalyzeError, setReanalyzeError] = useState<string | null>(null);
 
   // Sidebar state
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
@@ -274,7 +283,25 @@ export default function SurveyBandDetailPage() {
       });
   }, [showSignalCandidates, holdsData, signalCandidates, signalCandidatesLoading, decodedSurveyId, decodedBandId]);
 
-  const traces = useMemo<PlotData[]>(() => {
+  const handleReanalyze = useCallback(() => {
+    const parts = decodedSurveyId.split(':');
+    if (parts.length !== 4) return;
+    const [missionType, site, sensor, runId] = parts;
+
+    setReanalyzeLoading(true);
+    setReanalyzeError(null);
+    reanalyzeSignalCandidates(site, missionType, sensor, runId, decodedBandId, minPresence, minBandwidthHz, wideThreshold, wideMinBwHz)
+      .then((data) => {
+        setSignalCandidates(data);
+        setReanalyzeLoading(false);
+      })
+      .catch((err: any) => {
+        setReanalyzeError(err?.message ?? 'Reanalysis failed');
+        setReanalyzeLoading(false);
+      });
+  }, [decodedSurveyId, decodedBandId, minPresence, minBandwidthHz, wideThreshold, wideMinBwHz]);
+
+  const traces = useMemo<Array<Partial<PlotData>>>(() => {
     if (!holdsData) return [];
 
     const freqsMHz = holdsData.freqs.map((f) => f / 1e6); // Convert to MHz
@@ -282,7 +309,7 @@ export default function SurveyBandDetailPage() {
     const maxHold = holdsData.max_hold;
     const avgHold = holdsData.avg_hold;
 
-    const traces: PlotData[] = [];
+    const traces: Array<Partial<PlotData>> = [];
 
     // Add heatmap trace first (renders behind lines)
     if (showSignalActivity && signalActivityData) {
@@ -292,8 +319,8 @@ export default function SurveyBandDetailPage() {
       
       // Calculate y-axis range from holds data to span the full plot height
       const allPowerValues = [...minHold, ...maxHold, ...avgHold].filter(v => !isNaN(v) && isFinite(v));
-      const yMin = Math.min(...allPowerValues);
-      const yMax = Math.max(...allPowerValues);
+      const yMin = allPowerValues.reduce((a, b) => Math.min(a, b), Infinity);
+      const yMax = allPowerValues.reduce((a, b) => Math.max(a, b), -Infinity);
       const yRange = yMax - yMin;
       
       // Create y values that span the power range (use enough points for smooth rendering)
@@ -319,10 +346,9 @@ export default function SurveyBandDetailPage() {
         colorscale: 'Viridis',
         showscale: false,
         opacity: 0.3,
-        hoverinfo: 'x+z',
+        hoverinfo: 'x+y+z',
         hovertemplate: 'Frequency: %{x:.3f} MHz<br>Activity: %{z:.1%}<extra></extra>',
-        zorder: 0, // Behind line traces
-      } as PlotData);
+      });
     }
 
     // Add hold line traces
@@ -360,8 +386,8 @@ export default function SurveyBandDetailPage() {
     if (showSignalCandidates && signalCandidates && signalCandidates.length > 0 && holdsData) {
       // Calculate y-axis range from holds data
       const allPowerValues = [...minHold, ...maxHold, ...avgHold].filter(v => !isNaN(v) && isFinite(v));
-      const yMin = Math.min(...allPowerValues);
-      const yMax = Math.max(...allPowerValues);
+      const yMin = allPowerValues.reduce((a, b) => Math.min(a, b), Infinity);
+      const yMax = allPowerValues.reduce((a, b) => Math.max(a, b), -Infinity);
       
       signalCandidates.forEach((candidate, idx) => {
         const isHighlighted = highlightedCandidateIndex === idx;
@@ -373,7 +399,7 @@ export default function SurveyBandDetailPage() {
           line: { color: isHighlighted ? '#00ff00' : 'rgba(0, 255, 0, 0.6)', width: 1 },
           showlegend: false,
           hoverinfo: 'skip',
-        } as PlotData);
+        });
       });
     }
 
@@ -1136,16 +1162,108 @@ export default function SurveyBandDetailPage() {
                       disabled={!showSignalCandidates}
                       style={{ cursor: showSignalCandidates ? 'pointer' : 'not-allowed' }}
                     />
-                    <label 
-                      htmlFor="show-candidate-labels" 
-                      style={{ 
-                        color: showSignalCandidates ? '#f7f7f7' : '#666', 
+                    <label
+                      htmlFor="show-candidate-labels"
+                      style={{
+                        color: showSignalCandidates ? '#f7f7f7' : '#666',
                         cursor: showSignalCandidates ? 'pointer' : 'not-allowed',
                         fontSize: '0.85rem'
                       }}
                     >
                       Show candidate labels
                     </label>
+                  </div>
+                )}
+                {showSignalCandidates && (
+                  <div style={{ marginLeft: '1.5rem', marginTop: '0.5rem' }}>
+                    <button
+                      onClick={() => setShowDetectionParams(!showDetectionParams)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#4ecdc4',
+                        cursor: 'pointer',
+                        fontSize: '0.85rem',
+                        padding: '0',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.3rem',
+                      }}
+                    >
+                      <span>{showDetectionParams ? '▾' : '▸'}</span> Detection Parameters
+                    </button>
+                    {showDetectionParams && (
+                      <div style={{
+                        marginTop: '0.5rem',
+                        padding: '0.75rem',
+                        background: 'rgba(0,0,0,0.2)',
+                        borderRadius: '0.375rem',
+                        border: '1px solid rgba(255,255,255,0.07)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.6rem',
+                      }}>
+                        <div>
+                          <label style={{ color: '#aaa', fontSize: '0.78rem', display: 'block', marginBottom: '0.2rem' }}>
+                            Min Presence: <strong style={{ color: '#f7f7f7' }}>{(minPresence * 100).toFixed(0)}%</strong>
+                          </label>
+                          <input type="range" min="0" max="1" step="0.01"
+                            value={minPresence}
+                            onChange={(e) => setMinPresence(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ color: '#aaa', fontSize: '0.78rem', display: 'block', marginBottom: '0.2rem' }}>
+                            Min BW: <strong style={{ color: '#f7f7f7' }}>{minBandwidthHz >= 1000 ? `${(minBandwidthHz/1000).toFixed(0)} kHz` : `${minBandwidthHz} Hz`}</strong>
+                          </label>
+                          <input type="range" min="0" max="200000" step="1000"
+                            value={minBandwidthHz}
+                            onChange={(e) => setMinBandwidthHz(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ color: '#aaa', fontSize: '0.78rem', display: 'block', marginBottom: '0.2rem' }}>
+                            Wide Signal Threshold: <strong style={{ color: '#f7f7f7' }}>{(wideThreshold * 100).toFixed(0)}%</strong>
+                          </label>
+                          <input type="range" min="0" max="1" step="0.01"
+                            value={wideThreshold}
+                            onChange={(e) => setWideThreshold(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ color: '#aaa', fontSize: '0.78rem', display: 'block', marginBottom: '0.2rem' }}>
+                            Wide Min BW: <strong style={{ color: '#f7f7f7' }}>{(wideMinBwHz/1000).toFixed(0)} kHz</strong>
+                          </label>
+                          <input type="range" min="0" max="5000000" step="10000"
+                            value={wideMinBwHz}
+                            onChange={(e) => setWideMinBwHz(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                        <button
+                          onClick={handleReanalyze}
+                          disabled={reanalyzeLoading}
+                          style={{
+                            padding: '0.4rem 0.75rem',
+                            background: reanalyzeLoading ? 'rgba(78,205,196,0.3)' : '#4ecdc4',
+                            border: 'none',
+                            borderRadius: '0.25rem',
+                            color: '#0c0d10',
+                            fontSize: '0.85rem',
+                            cursor: reanalyzeLoading ? 'not-allowed' : 'pointer',
+                            fontWeight: 'bold',
+                          }}
+                        >
+                          {reanalyzeLoading ? 'Running...' : 'Re-analyze'}
+                        </button>
+                        {reanalyzeError && (
+                          <span style={{ color: '#ff6b6b', fontSize: '0.78rem' }}>{reanalyzeError}</span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
@@ -1770,7 +1888,35 @@ export default function SurveyBandDetailPage() {
       {/* Signal Candidates Panel */}
       {showSignalCandidates && (
         <section style={{ margin: '2rem 0', padding: '1rem', background: '#0f1320', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.08)' }}>
-          <h2 style={{ color: '#f7f7f7', marginBottom: '1rem', fontSize: '1.25rem' }}>Signal Candidates</h2>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h2 style={{ color: '#f7f7f7', fontSize: '1.25rem', margin: 0 }}>
+              Signal Candidates
+              {signalCandidates && (
+                <span style={{ marginLeft: '0.6rem', fontSize: '0.9rem', color: '#4ecdc4', fontWeight: 'normal' }}>
+                  ({signalCandidates.length})
+                </span>
+              )}
+            </h2>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ color: '#888', fontSize: '0.8rem' }}>
+                presence ≥ {(minPresence * 100).toFixed(0)}% · BW ≥ {minBandwidthHz >= 1000 ? `${(minBandwidthHz/1000).toFixed(0)} kHz` : `${minBandwidthHz} Hz`} · wide ≥ {(wideThreshold * 100).toFixed(0)}%
+              </span>
+              <button
+                onClick={() => setShowDetectionParams(true)}
+                style={{
+                  padding: '0.3rem 0.6rem',
+                  background: 'rgba(78,205,196,0.15)',
+                  border: '1px solid rgba(78,205,196,0.4)',
+                  borderRadius: '0.25rem',
+                  color: '#4ecdc4',
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                }}
+              >
+                ⚙ Adjust
+              </button>
+            </div>
+          </div>
           
           {signalCandidatesLoading ? (
             <p style={{ color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>Loading candidates...</p>

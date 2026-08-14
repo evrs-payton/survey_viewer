@@ -531,3 +531,102 @@ textarea:focus {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Range inputs */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  outline: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4ecdc4;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(78,205,196,0.5);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 10px rgba(78,205,196,0.7);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4ecdc4;
+  border: none;
+  cursor: pointer;
+}
+
+/* Signal candidates table */
+.candidates-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+}
+
+.candidates-table th {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: rgba(155,171,207,0.9);
+  border-bottom: 1px solid rgba(114,211,255,0.15);
+  white-space: nowrap;
+}
+
+.candidates-table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.candidates-table tbody tr {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.candidates-table tbody tr:hover {
+  background: rgba(78,205,196,0.08);
+}
+
+.candidates-table tbody tr.highlighted {
+  background: rgba(78,205,196,0.18);
+}
+
+/* Detection params panel */
+.detection-params {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(0,0,0,0.25);
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255,255,255,0.07);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.detection-params label {
+  color: rgba(155,171,207,0.9);
+  font-size: 0.78rem;
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.detection-params label strong {
+  color: var(--text-primary);
+}
