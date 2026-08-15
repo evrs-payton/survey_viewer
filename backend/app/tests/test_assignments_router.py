@@ -340,7 +340,7 @@ def test_import_empty_site(client):
             "source_name": "SFAF",
             "assignments": [
                 {
-                    "assignment_serial": "ASSIGN-001",
+                    "agency_serial": "ASSIGN-001",
                     "center_frequency_hz": 2602500,
                     "bandwidth_hz": 100,
                 },

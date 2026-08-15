@@ -27,7 +27,7 @@ async def test_get_overlays_basic():
     mock_pool = AsyncMock()
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=mock_rows)
-    mock_pool.acquire = AsyncMock()
+    mock_pool.acquire = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     
@@ -64,7 +64,7 @@ async def test_get_overlays_with_valid_on():
     mock_pool = AsyncMock()
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=mock_rows)
-    mock_pool.acquire = AsyncMock()
+    mock_pool.acquire = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     
@@ -94,7 +94,7 @@ async def test_get_overlays_empty_result():
     mock_pool = AsyncMock()
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=[])
-    mock_pool.acquire = AsyncMock()
+    mock_pool.acquire = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     
